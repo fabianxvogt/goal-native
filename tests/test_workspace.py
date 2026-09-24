@@ -59,6 +59,29 @@ class WorkspaceTests(unittest.TestCase):
         self.assertFalse((self.stage / "node_modules").exists())
         self.assertEqual("print(7)\n", (self.stage / "lib/main.py").read_text())
 
+    def test_explicit_generated_path_survives_baseline_continuation_and_export(self) -> None:
+        generated = self.stage / "build"
+        generated.mkdir()
+        (generated / "chosen.py").write_text("print(1)\n")
+        (generated / "unselected.py").write_text("generated cache")
+        files, selection = workspace.snapshot_directory(self.stage, tracked={"build/chosen.py"}, strict=True)
+        self.assertEqual({"build/chosen.py"}, set(files))
+        self.store.remember_workspace_baseline(self.goal["id"], self.stage.name, files, selection)
+        (generated / "chosen.py").write_text("print(2)\n")
+        continued = self.stage.parent / "run-continued"
+        continued.mkdir()
+        workspace.copy_selected_directory(self.stage, continued, tracked=files,
+                                          excluded=selection["exclusions"], strict=True)
+        self.store.remember_workspace_baseline(self.goal["id"], continued.name, files, selection)
+        report, _ = workspace.review_workspace(self.store, self.goal["id"], continued)
+        self.assertEqual([("build/chosen.py", "modified")],
+                         [(change["path"], change["status"]) for change in report["changes"]])
+        output = self.root / "selected.zip"
+        workspace.export_reviewed(self.store, self.goal["id"], continued, report["review_id"], output, format="files")
+        with zipfile.ZipFile(output) as archive:
+            self.assertEqual(b"print(2)\n", archive.read("files/build/chosen.py"))
+            self.assertNotIn("files/build/unselected.py", archive.namelist())
+
     def test_patch_roundtrip_covers_add_modify_delete_modes_and_missing_newline(self) -> None:
         (self.source / "change.py").write_text("value = 1\n")
         (self.source / "remove.txt").write_text("obsolete")

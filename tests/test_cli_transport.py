@@ -6,6 +6,7 @@ performance baseline. No external network or real credential is used.
 import json
 import os
 import select
+import signal
 import subprocess
 import sys
 import tempfile
@@ -283,6 +284,51 @@ class CLITransportTests(unittest.TestCase):
                 cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30)
             self.assertEqual(fresh.returncode, 0, fresh.stdout + fresh.stderr)
             self.assertFalse((Path(json.loads(fresh.stdout)['stage_dir']) / 'note.txt').exists())
+
+    def test_cancelled_stream_keeps_visible_partial_work_without_repeating_it(self):
+        server = ThreadingHTTPServer(('127.0.0.1', 0), StreamingFixture)
+        server.requests, server.release = [], threading.Event()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.release.set)
+        with tempfile.TemporaryDirectory(prefix='goal-native-partial-stop-') as temporary:
+            environment = dict(os.environ, HOME=temporary, OPENAI_API_KEY='STREAM_FIXTURE_KEY',
+                               OPENAI_BASE_URL=f'http://127.0.0.1:{server.server_port}/v1')
+            process = subprocess.Popen(
+                [sys.executable, '-m', 'goal_native', '--state', temporary,
+                 '--provider', 'openai', '--model', 'gpt-4.1-mini'],
+                cwd=ROOT, env=environment, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                process.stdin.write(b'Respond in two parts.\n/exit\n')
+                process.stdin.flush()
+                prefix, deadline = b'', time.monotonic() + 15
+                while b'Early streamed text. ' not in prefix and time.monotonic() < deadline:
+                    if select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))[0]:
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                        if not chunk:
+                            break
+                        prefix += chunk
+                self.assertIn(b'Early streamed text. ', prefix)
+                process.send_signal(signal.SIGINT)
+                suffix, stderr = process.communicate(timeout=20)
+                self.assertEqual(130, process.returncode, (prefix + suffix + stderr).decode())
+                self.assertEqual(1, (prefix + suffix).count(b'Early streamed text. '))
+                with Store(temporary) as store:
+                    detail = store.goal(store.list_goals()[0]['id'])
+                    self.assertEqual('Early streamed text. ', detail['runs'][-1]['assistant_text'])
+                    self.assertEqual('cancelled', detail['runs'][-1]['status'])
+                    self.assertEqual('paused', detail['status'])
+                    self.assertEqual(1, len(detail['requests']))
+                    self.assertFalse(any(inv['status'] == 'running' for inv in detail['invocations']))
+            finally:
+                server.release.set()
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=5)
 
     def test_chat_shows_partial_text_before_provider_completion_without_repeating_it(self):
         server = ThreadingHTTPServer(('127.0.0.1', 0), StreamingFixture)

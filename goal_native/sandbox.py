@@ -622,13 +622,9 @@ class Sandbox:
         for device in ("/dev/null", "/dev/urandom", "/dev/random"):
             lines.append("(allow file-read* (literal " + _sbpl(device) + "))")
             lines.append("(allow file-write* (literal " + _sbpl(device) + "))")
-        blocked_patterns = (
-            self._blocked_stage_pattern(),
-            rf"^{re.escape(str(self.root))}/(?:[^/]+/)*[.]env(?:/|$)",
-        )
-        for blocked_pattern in blocked_patterns:
-            lines.append("(deny file-read* (regex " + _sbpl(blocked_pattern) + "))")
-            lines.append("(deny file-write* (regex " + _sbpl(blocked_pattern) + "))")
+        blocked_pattern = self._blocked_stage_pattern()
+        lines.append("(deny file-read* (regex " + _sbpl(blocked_pattern) + "))")
+        lines.append("(deny file-write* (regex " + _sbpl(blocked_pattern) + "))")
         lines.append("(deny network*)")
         return "".join(lines)
 

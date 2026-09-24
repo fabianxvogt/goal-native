@@ -111,6 +111,21 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertEqual(1, result.returncode)
             self.assertEqual("user installation state\n", marker.read_text(encoding="utf-8"))
 
+    def test_bootstrap_rejects_an_external_interpreter_without_replacing_it(self) -> None:
+        from scripts import bootstrap
+
+        with tempfile.TemporaryDirectory(prefix="goal-native-external-python-") as temporary:
+            venv = Path(temporary) / ".venv"
+            interpreter = venv / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.symlink_to(Path(sys.executable).resolve())
+            with patch.multiple(bootstrap, VENV=venv, VENV_PYTHON=interpreter):
+                with self.assertRaises(bootstrap.BootstrapError):
+                    bootstrap._ensure_venv(sys.executable)
+            self.assertTrue(interpreter.is_symlink())
+            self.assertEqual(Path(sys.executable).resolve(), interpreter.resolve())
+            self.assertFalse((venv / "lib").exists())
+
     @unittest.skipUnless(shutil.which("git"), "Git is required for the pin boundary")
     def test_bootstrap_rejects_a_clean_but_unpinned_pi_without_resetting_it(self) -> None:
         from scripts import bootstrap
@@ -138,10 +153,21 @@ class InstallationBoundaryTests(unittest.TestCase):
             (pi / "package.json").write_text('{"changed":true}\n', encoding="utf-8")
             git(pi, "commit", "--quiet", "-am", "Different clean dependency")
             other = git(pi, "rev-parse", "HEAD")
+            from goal_native.runtime import pi_source_status
+            self.assertFalse(pi_source_status(root, shutil.which("git"))["ok"])
             with patch.object(bootstrap, "ROOT", root), self.assertRaises(bootstrap.BootstrapError):
                 bootstrap._ensure_pi_submodule(shutil.which("git"))
             self.assertEqual(other, git(pi, "rev-parse", "HEAD"))
             self.assertEqual('{"changed":true}\n', (pi / "package.json").read_text(encoding="utf-8"))
+            git(pi, "checkout", "--quiet", "--detach", pinned)
+            self.assertTrue(pi_source_status(root, shutil.which("git"))["ok"])
+            (pi / "package.json").write_text('{"local":true}\n', encoding="utf-8")
+            self.assertFalse(pi_source_status(root, shutil.which("git"))["ok"])
+            (pi / "package.json").write_text("{}\n", encoding="utf-8")
+            real_pi = root / "saved-pi"
+            pi.rename(real_pi)
+            pi.symlink_to(real_pi, target_is_directory=True)
+            self.assertFalse(pi_source_status(root, shutil.which("git"))["initialized"])
 
     def test_doctor_separates_runtime_failure_from_credentials_without_secret_output(self) -> None:
         from goal_native import cli as cli_module

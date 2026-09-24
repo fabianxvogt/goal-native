@@ -47,6 +47,27 @@ class SandboxTests(unittest.TestCase):
             self.assertEqual(0, result["exit_code"], result["stderr"])
             self.assertEqual("42\nstaged data\nargument\n", result["stdout"])
 
+    def test_execution_denies_environment_file_case_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "check.py").write_text(
+                "for name in ['.env', '.ENV', '.eNv']:\n"
+                "    try:\n"
+                "        with open(name, 'w') as handle: handle.write('synthetic')\n"
+                "    except PermissionError:\n"
+                "        print(name + ':DENIED')\n"
+                "    else:\n"
+                "        raise AssertionError('environment path was writable')\n",
+                encoding="utf-8",
+            )
+            sandbox = Sandbox(root)
+            try:
+                result = sandbox.run({"path": "check.py"})
+            finally:
+                sandbox.close()
+            self.assertEqual(0, result["exit_code"], result["stderr"])
+            self.assertEqual(".env:DENIED\n.ENV:DENIED\n.eNv:DENIED\n", result["stdout"])
+
     def test_execution_uses_fixed_enforcer_and_trusted_interpreter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "stage"

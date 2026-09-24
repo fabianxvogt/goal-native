@@ -414,6 +414,7 @@ class Worker:
         self._admission: dict[str, Any] | None = None
         self._admission_error: str | None = None
         self._last_assistant_text = ""
+        self._streamed_parts: dict[int, list[str]] = {}
 
     @property
     def last_assignment_id(self) -> str | None:
@@ -446,6 +447,7 @@ class Worker:
         self._admission = None
         self._admission_error = None
         self._last_assistant_text = ""
+        self._streamed_parts.clear()
         self._goal_id = goal_id
         self._run_id = None
         self._run_attempt_id = None
@@ -523,7 +525,7 @@ class Worker:
                 status, stop_reason = "interrupted", "context_budget"
                 diagnostic = self._diagnostic(self._admission_error, stop_reason)
             if not text and status != "finished":
-                text = self._last_assistant_text
+                text = self._current_assistant_text()
             invocation_id = self._last_invocation_id
             if invocation_id is not None and invocation_id not in self._finished_invocations:
                 self._finish_current(status, text)
@@ -629,7 +631,7 @@ class Worker:
 
     def _stop_run(self, goal_id: str, status: str, stop_reason: str, message: str) -> dict[str, Any]:
         invocation_id = self._last_invocation_id
-        assistant_text = self._last_assistant_text
+        assistant_text = self._current_assistant_text()
         if invocation_id is not None and invocation_id not in self._finished_invocations:
             self._finish_current(status, assistant_text)
         return self._complete_run(
@@ -641,6 +643,11 @@ class Worker:
             0 if invocation_id is None else None,
             invocation_id,
         )
+
+    def _current_assistant_text(self) -> str:
+        return "\n".join(
+            "".join(parts) for _, parts in sorted(self._streamed_parts.items())
+        ) or self._last_assistant_text
 
     def _rpc(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._check_cancelled(self._started_at)
@@ -888,6 +895,13 @@ class Worker:
             observed,
             note="Exact upstream pi event; model/tool data remains untrusted.",
         )
+        message = observed.get("message")
+        if event_type == "message_start" and isinstance(message, dict) and message.get("role") == "assistant":
+            self._streamed_parts.clear()
+        elif event_type == "message_update":
+            delta = observed.get("assistantMessageEvent", {})
+            if delta.get("type") == "text_delta":
+                self._streamed_parts.setdefault(delta["contentIndex"], []).append(delta["delta"])
         if envelope_type == "provider_stream_event":
             data = event.get("data")
             response = data.get("response") if isinstance(data, dict) else None
@@ -897,6 +911,10 @@ class Worker:
         if event_type == "message_end":
             message = observed.get("message")
             if isinstance(message, dict) and message.get("role") == "assistant":
+                text = self._assistant_text(message) or self._current_assistant_text()
+                if text:
+                    self._last_assistant_text = text
+                self._streamed_parts.clear()
                 normalized: dict[str, Any] = {}
                 reported = self._provider_usage.get(invocation_id)
                 if isinstance(reported, dict):

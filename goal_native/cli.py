@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .context import ContextBudget
+from .runtime import pi_source_status
 from .sandbox import Sandbox, SandboxError, SandboxUnavailable
 from .store import Store
 from .worker import Worker
@@ -199,7 +200,8 @@ def _stage_inputs(
             "bytes": len(content.encode("utf-8")),
         }
     if baseline is None:
-        files, selection = snapshot_directory(stage_root, strict=True)
+        explicit = (manifest["artifact"]["path"],) if artifact is not None else ()
+        files, selection = snapshot_directory(stage_root, tracked=explicit, strict=True)
         if manifest["source"] is not None:
             selection = manifest["source"]
         if source is not None and not recovered:
@@ -531,6 +533,7 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     upstream = project_root / "upstream" / "pi"
+    source_status = pi_source_status(project_root, git_path)
     package_names = ("chord", "telemetry", "agent", "ai", "coding-agent")
     dist_files = [
         upstream / "packages" / "chord" / "dist" / "index.js",
@@ -543,15 +546,18 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
     for name in package_names:
         package_path = upstream / "packages" / name / "package.json"
         try:
+            if not source_status["initialized"]:
+                versions[name] = None
+                continue
             versions[name] = json.loads(package_path.read_text(encoding="utf-8")).get("version")
         except (OSError, ValueError):
             versions[name] = None
     expected_versions = {name: "0.87.1" for name in package_names}
-    pi_cloned = upstream.is_dir() and (upstream / ".git").exists()
-    pi_built = all(path.is_file() for path in dist_files)
+    pi_cloned = source_status["initialized"]
+    pi_built = pi_cloned and all(path.is_file() for path in dist_files)
     bridge_ok = (project_root / "bridge" / "agent.mjs").is_file()
     pi_importable = False
-    if node_ok and pi_built and bridge_ok:
+    if source_status["ok"] and node_ok and pi_built and bridge_ok:
         try:
             probe = subprocess.run(
                 [node_path, "--input-type=module", "-e", "await import('./bridge/agent.mjs')"],
@@ -560,10 +566,11 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
             pi_importable = probe.returncode == 0
         except (OSError, subprocess.SubprocessError):
             pass
-    pi_ok = pi_cloned and pi_importable and versions == expected_versions
+    pi_ok = source_status["ok"] and pi_importable and versions == expected_versions
     checks["pi"] = {
         "ok": pi_ok,
         "cloned": pi_cloned,
+        "source": source_status,
         "built": pi_built,
         "importable": pi_importable,
         "versions": versions,
@@ -1052,7 +1059,6 @@ class _RunDisplay:
         if kind == "message_start" and message.get("role") == "assistant":
             self.seen.clear()
             self.text_index = None
-            self.last_reply = None
         elif kind == "message_update":
             delta = event.get("assistantMessageEvent", {})
             if delta.get("type") == "text_delta":
@@ -1079,12 +1085,16 @@ class _RunDisplay:
 
     def finish(self, result: dict[str, Any] | None = None) -> None:
         self._clear_status()
-        self._end_text()
         if result is not None:
-            reply = result.get("result") or "No response text returned."
+            reply = result.get("result") or ""
             if reply != self.last_reply:
-                print(_terminal_text(reply), file=self.stream, flush=True)
-                print(file=self.stream)
+                if self.seen:
+                    consumed = sum(self.seen.values()) + max(0, len(self.seen) - 1)
+                    self.stream.write(_terminal_text(reply[consumed:]))
+                elif reply or not self.last_reply:
+                    self.stream.write(_terminal_text(reply or "No response text returned."))
+                    self.line_open = True
+        self._end_text()
 
 
 def _chat_sessions(state: str) -> list[dict[str, Any]]:

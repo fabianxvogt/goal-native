@@ -120,6 +120,7 @@ def snapshot_directory(
     root_fd = os.open(root, flags)
     pinned = os.fstat(root_fd)
     tracked = set(tracked)
+    retained_paths = tracked | {parent.as_posix() for path in tracked for parent in Path(path).parents}
     original_exclusions = {item["path"]: item["reason"] for item in excluded}
     omissions: dict[str, str] = {}
     candidates: list[str] = []
@@ -130,7 +131,7 @@ def snapshot_directory(
             raise ValueError(f"cannot review {path}: {reason}")
         omissions[path] = reason
 
-    def walk(fd: int, prefix: str, depth: int) -> None:
+    def walk(fd: int, prefix: str, depth: int, excluded_parent: str | None = None) -> None:
         nonlocal entries
         if depth > 64:
             raise ValueError("source directory exceeds the depth limit")
@@ -149,13 +150,11 @@ def snapshot_directory(
             if blocked_component(name):
                 omit(path, "credential/controller name", unsafe=True)
                 continue
-            if name in _GENERATED and path not in tracked:
-                omit(path, "generated/dependency path")
-                continue
             inherited = next((reason for p, reason in original_exclusions.items()
                               if path == p or path.startswith(p + "/")), None)
-            if inherited and path not in tracked:
-                omit(path, inherited)
+            reason = excluded_parent or inherited or ("generated/dependency path" if name in _GENERATED else None)
+            if reason and path not in retained_paths:
+                omit(path, reason)
                 continue
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
             if stat.S_ISLNK(info.st_mode):
@@ -163,7 +162,7 @@ def snapshot_directory(
             elif stat.S_ISDIR(info.st_mode):
                 child = os.open(name, flags, dir_fd=fd)
                 try:
-                    walk(child, path + "/", depth + 1)
+                    walk(child, path + "/", depth + 1, reason)
                 finally:
                     os.close(child)
             elif stat.S_ISREG(info.st_mode):

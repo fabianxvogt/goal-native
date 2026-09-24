@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -14,6 +15,7 @@ from pathlib import Path
 MIN_PYTHON = (3, 11)
 MIN_NODE = (22, 19, 0)
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 VENV = ROOT / ".venv"
 VENV_PYTHON = VENV / "bin" / "python"
 ENTRYPOINT = VENV / "bin" / "goal-native"
@@ -111,24 +113,12 @@ def _ensure_pi_submodule(git: str) -> None:
     package = submodule / "package.json"
     git_marker = submodule / ".git"
     remediation = "run git submodule update --init --recursive in the checkout, then rerun bootstrap"
-    if submodule.is_symlink() or (submodule.exists() and not submodule.is_dir()):
+    if (ROOT / "upstream").is_symlink() or submodule.is_symlink() or (submodule.exists() and not submodule.is_dir()):
         raise BootstrapError(
             f"{submodule} is not a safe submodule directory; it was not changed. "
             f"Remediation: move that path aside yourself, then {remediation}."
         )
-    if package.is_file() and git_marker.exists():
-        status = _run(
-            [git, "-C", str(submodule), "status", "--porcelain"],
-            label="pi submodule safety check",
-            remediation="repair the pi submodule Git metadata, then rerun bootstrap",
-            capture_output=True,
-        )
-        if status.stdout.strip():
-            raise BootstrapError(
-                f"{submodule} has uncommitted changes; the checkout was not changed. "
-                "Remediation: commit or stash those changes yourself, then rerun bootstrap."
-            )
-    else:
+    if not (package.is_file() and git_marker.exists()):
         if submodule.exists() and any(submodule.iterdir()):
             raise BootstrapError(
                 f"{submodule} exists but is not an initialized pinned submodule; it was not changed. "
@@ -141,19 +131,10 @@ def _ensure_pi_submodule(git: str) -> None:
         )
         if not package.is_file() or not git_marker.exists():
             raise BootstrapError(f"the pinned pi submodule is unavailable. Remediation: {remediation}.")
-    expected = _run(
-        [git, "-C", str(ROOT), "rev-parse", "HEAD:upstream/pi"],
-        label="pi Git pin lookup", remediation=remediation, capture_output=True,
-    ).stdout.strip()
-    actual = _run(
-        [git, "-C", str(submodule), "rev-parse", "HEAD"],
-        label="pi revision lookup", remediation=remediation, capture_output=True,
-    ).stdout.strip()
-    if actual != expected:
-        raise BootstrapError(
-            f"pi is at {actual}, but this checkout pins {expected}; it was not changed. "
-            f"Remediation: {remediation}."
-        )
+    from goal_native.runtime import pi_source_status
+    source = pi_source_status(ROOT, git)
+    if not source["ok"]:
+        raise BootstrapError(f"{source['error']}; the checkout was not changed. Remediation: {remediation}.")
 
 
 def _ensure_venv(python: str) -> str:
@@ -176,7 +157,7 @@ def _ensure_venv(python: str) -> str:
 
     try:
         version = subprocess.run(
-            [str(VENV_PYTHON), "-c", "import sys; print(sys.version_info[0], sys.version_info[1])"],
+            [str(VENV_PYTHON), "-c", "import json, sys; print(json.dumps({'version': list(sys.version_info[:2]), 'prefix': sys.prefix, 'base_prefix': sys.base_prefix}))"],
             capture_output=True,
             text=True,
             check=False,
@@ -193,8 +174,10 @@ def _ensure_venv(python: str) -> str:
             f"Remediation: remove only {VENV} yourself and rerun bootstrap."
         )
     try:
-        venv_major, venv_minor = (int(value) for value in version.stdout.split())
-    except (TypeError, ValueError) as exc:
+        identity = json.loads(version.stdout)
+        venv_major, venv_minor = identity["version"]
+        prefix, base_prefix = Path(identity["prefix"]).resolve(), Path(identity["base_prefix"]).resolve()
+    except (KeyError, TypeError, ValueError) as exc:
         raise BootstrapError(
             "the virtual-environment Python version could not be validated. "
             f"Remediation: remove only {VENV} yourself and rerun bootstrap with Python 3.11+."
@@ -203,6 +186,11 @@ def _ensure_venv(python: str) -> str:
         raise BootstrapError(
             f"the virtual environment uses Python {venv_major}.{venv_minor}; Python 3.11+ is required. "
             f"Remediation: remove only {VENV} yourself and rerun bootstrap with Python 3.11+."
+        )
+    if prefix != VENV.resolve() or prefix == base_prefix:
+        raise BootstrapError(
+            "the selected Python does not belong to this .venv; no package was installed. "
+            f"Remediation: move {VENV} aside yourself and rerun bootstrap."
         )
     return str(VENV_PYTHON)
 
