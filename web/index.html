@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Goal Native — durable intent</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand-lockup">
+      <div class="eyebrow">LOCAL / CONTROLLED / AUDITABLE</div>
+      <h1>Goal <em>Native</em></h1>
+      <p class="dek">Make an outcome legible. Keep the work reusable. Let delivery require a human.</p>
+    </div>
+    <div class="header-actions">
+      <span id="provider-status" class="status-pill">Checking provider…</span>
+      <button id="export-button" class="button quiet">Export workspace</button>
+      <label class="button quiet file-button">Import into empty state<input id="import-input" type="file" accept="application/json"></label>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="rail panel">
+      <div class="section-heading">
+        <div><span class="eyebrow">01 / INTENT</span><h2>Goal tree</h2></div>
+        <button id="refresh-button" class="icon-button" title="Refresh">↻</button>
+      </div>
+      <label class="search-wrap"><span>Search</span><input id="search-input" type="search" placeholder="outcomes, work, evidence"></label>
+      <div id="goal-tree" class="goal-tree" aria-live="polite"></div>
+      <form id="goal-form" class="stack-form">
+        <span class="eyebrow">New goal</span>
+        <label>Outcome<input name="outcome" required maxlength="250000" placeholder="What should become true?"></label>
+        <div class="two-up">
+          <label>Kind<select name="kind"><option value="outcome">Outcome (bounded result)</option><option value="direction">Direction (ongoing purpose)</option></select></label>
+          <label>Parent goal<select name="parent_id" id="parent-goal"><option value="">Top-level goal</option></select></label>
+        </div>
+        <label>Success criteria<textarea name="criteria" rows="3" placeholder="How will a person recognize success?"></textarea></label>
+        <label>Constraints<textarea name="constraints" rows="3" placeholder="Boundaries, context, or non-goals"></textarea></label>
+        <button class="button primary" type="submit">Create goal</button>
+      </form>
+    </aside>
+
+    <section class="workspace">
+      <div id="empty-state" class="empty-state panel">
+        <span class="eyebrow">A durable place to begin</span>
+        <h2>Choose a goal, or name one above.</h2>
+        <p>Manual drafts work without a model. Provider runs are explicit and never pretend to be available.</p>
+      </div>
+      <div id="goal-view" class="hidden" hidden aria-hidden="true">
+        <section class="hero panel">
+          <div class="hero-top">
+            <div class="hero-copy">
+              <span id="goal-kind" class="eyebrow"></span>
+              <h2 id="goal-outcome"></h2>
+              <p id="goal-meta" class="muted"></p>
+            </div>
+            <div id="goal-status" class="status-pill"></div>
+          </div>
+          <div id="dimension-summary" class="dimension-summary" aria-label="Goal dimensions">
+            <article class="dimension-card">
+              <span class="eyebrow">Work</span>
+              <strong id="dimension-work-state">—</strong>
+              <p id="dimension-work-detail" class="tiny muted"></p>
+            </article>
+            <article class="dimension-card">
+              <span class="eyebrow">Evidence</span>
+              <strong id="dimension-evidence-state">—</strong>
+              <p id="dimension-evidence-detail" class="tiny muted"></p>
+            </article>
+            <article class="dimension-card">
+              <span class="eyebrow">Delivery</span>
+              <strong id="dimension-delivery-state">—</strong>
+              <p id="dimension-delivery-detail" class="tiny muted"></p>
+            </article>
+          </div>
+          <div id="import-notice" class="provenance-notice hidden" hidden role="status">
+            <strong>Imported workspace history</strong>
+            <p>History preserved; effect permissions revoked. Evidence and acceptance are historical judgments, not independently authenticated current health. Re-assess locally before delivery.</p>
+          </div>
+        </section>
+
+        <section class="panel split-panel">
+          <div>
+            <div class="eyebrow">Request stream</div>
+            <h3>Change the brief without losing the trail.</h3>
+            <div id="request-list" class="request-list"></div>
+            <form id="revision-form" class="stack-form compact revision-form">
+              <span class="eyebrow">Revise outcome</span>
+              <label>Outcome<input name="outcome" required maxlength="250000"></label>
+              <label>Criteria<textarea name="criteria" rows="2"></textarea></label>
+              <label>Constraints<textarea name="constraints" rows="2"></textarea></label>
+              <button class="button" type="submit">Save revision</button>
+            </form>
+          </div>
+          <form id="request-form" class="stack-form compact">
+            <label>New request<textarea name="text" rows="4" required placeholder="Ask for a useful next move…"></textarea></label>
+            <div class="button-row wrap">
+              <button class="button primary" data-control="" type="submit">Record request</button>
+              <button class="button" data-control="draft" type="button">Draft only</button>
+              <button class="button" data-control="pause" type="button">Pause</button>
+              <button class="button" data-control="resume" type="button">Resume</button>
+              <button class="button warn" data-control="allow_effects" type="button">Allow mock effects</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel split-panel">
+          <div>
+            <div class="eyebrow">Workbench</div>
+            <h3>Work is provisional until assessed.</h3>
+            <p id="worker-note" class="muted"></p>
+            <div class="button-row">
+              <button id="run-button" class="button primary" type="button">Run provider</button>
+              <button id="cancel-button" class="button" type="button">Cancel run</button>
+            </div>
+          </div>
+          <form id="draft-form" class="stack-form compact">
+            <label>Manual draft<textarea name="content" rows="7" required placeholder="Write or paste a candidate. This is recorded as human-authored work."></textarea></label>
+            <div class="two-up"><label>Name<input name="name" value="Manual draft" maxlength="200"></label><label>Kind<select name="kind"><option value="draft">Draft</option><option value="product">Product</option><option value="note">Note</option></select></label></div>
+            <label>Limitations<input name="limitations" maxlength="20000" placeholder="What has not been checked?"></label>
+            <button class="button primary" type="submit">Save manual draft</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading"><div><div class="eyebrow">02 / WORK + EVIDENCE</div><h3>Products and provenance</h3></div><span id="artifact-count" class="muted"></span></div>
+          <div id="artifact-list" class="artifact-list"></div>
+        </section>
+
+        <section class="panel split-panel delivery-panel">
+          <div>
+            <div class="eyebrow">03 / DELIVERY</div>
+            <h3>Human assessment, then a mock effect.</h3>
+            <p class="muted">Nothing here authorizes a real connector. Approval is exact, versioned, and local.</p>
+            <form id="assessment-form" class="stack-form compact">
+              <label>Candidate<select name="artifact_id" id="assessment-artifact" required></select></label>
+              <label>Check<input name="check" required maxlength="200" placeholder="Reviewed against the success criteria"></label>
+              <label>Details<textarea name="details" rows="3" placeholder="What did a human actually inspect?"></textarea></label>
+              <label class="check-label"><input name="passed" type="checkbox"> Check passed</label>
+              <button class="button" type="submit">Record trusted assessment</button>
+            </form>
+          </div>
+          <form id="effect-form" class="stack-form compact">
+            <label>Assessed candidate<select name="artifact_id" id="effect-artifact" required></select></label>
+            <label>Trusted evidence<select name="evidence_id" id="effect-evidence" required></select></label>
+            <div class="two-up"><label>Mock target<input name="target" required maxlength="240" placeholder="demo/inbox"></label><label>Expected version<input name="expected_version" type="number" min="0" value="0" required></label></div>
+            <button class="button warn" type="submit">Prepare exact proposal</button>
+            <p class="tiny muted">Grant effect authority with “Allow mock effects” in the request stream first.</p>
+          </form>
+        </section>
+
+        <section class="panel split-panel">
+          <div>
+            <div class="eyebrow">Acceptance</div>
+            <h3>Mark the current work acceptable.</h3>
+            <form id="accept-form" class="stack-form compact">
+              <label>Candidate<select name="artifact_id" id="accept-artifact" required></select></label>
+              <label>Evidence<select name="evidence_id" id="accept-evidence" required></select></label>
+              <button class="button" type="submit">Accept candidate</button>
+            </form>
+          </div>
+          <div><div class="eyebrow">Effect ledger</div><div id="effect-list" class="effect-list"></div></div>
+        </section>
+
+        <section class="panel trace-panel">
+          <div class="eyebrow">Trace</div>
+          <h3>Events and meaningful changes</h3>
+          <div id="event-list" class="event-list"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

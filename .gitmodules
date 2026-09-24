@@ -1,0 +1,3 @@
+[submodule "upstream/pi"]
+	path = upstream/pi
+	url = https://github.com/badlogic/pi-mono.git

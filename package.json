@@ -1,0 +1,14 @@
+{
+  "name": "goal-native-pi-bridge",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "check:upstream": "node --input-type=commonjs -e \"const fs=require('fs'); for (const name of ['agent','ai','coding-agent']) { const pkg=JSON.parse(fs.readFileSync('upstream/pi/packages/'+name+'/package.json','utf8')); if (pkg.version !== '0.87.1') throw new Error('unsupported upstream '+name+' version: '+pkg.version); }\"",
+    "build:auth": "npm --prefix upstream/pi exec tsgo -- --noCheck -p upstream/pi/packages/coding-agent/tsconfig.build.json",
+    "bootstrap:upstream": "npm --prefix upstream/pi ci --ignore-scripts && npm run check:upstream && npm --prefix upstream/pi run hydrate-model-data && npm --prefix upstream/pi run build:offline --workspace=@earendil-works/pi-ai && npm --prefix upstream/pi run build --workspace=@earendil-works/pi-agent-core && npm run build:auth",
+    "build:upstream": "npm run check:upstream && npm --prefix upstream/pi run build:offline --workspace=@earendil-works/pi-ai && npm --prefix upstream/pi run build --workspace=@earendil-works/pi-agent-core && npm run build:auth"
+  }
+}
