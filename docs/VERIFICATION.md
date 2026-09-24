@@ -99,7 +99,9 @@ not a standalone distribution.
 ### Independent-review repairs
 
 Two independent Luna/xhigh reviews covered budget/stream recovery and
-source delivery/installation. Their findings produced these exercised repairs:
+source delivery/installation. Both settled-source re-reviews approved the
+repaired code at `aad06c5`, using source inspection and retained before/after
+evidence without rerunning commands. All scoped findings are resolved:
 
 - Cancelling after visible streamed text but before `turn_end` initially lost
   that text and printed a false empty-response fallback. The actual CLI now
