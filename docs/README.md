@@ -1,6 +1,6 @@
 # Documentation
 
-- [Observed verification](VERIFICATION.md): session-first terminal, live follow-up failure/repair and cancellation; earlier OAuth/transport/OS fixtures and performance gates.
+- [Observed verification](VERIFICATION.md): streaming, stop/continue and automatic file reopening; live Luna coding, earlier failures/repairs, and performance gates.
 - [Acceptance contract](CONTRACT.md): owner proposal mapped to implementation and evidence gates.
 - [Architecture](ARCHITECTURE.md): cloned pi foundation, integration ownership and enforcement hooks.
 - [Runtime API](API.md): controller/worker/UI integration, authority and ownership boundaries.

@@ -4,7 +4,7 @@
 
 A session-first, local AI CLI. Open it and type a request; durable goals, changing requirements and reusable work are handled underneath. An interrupted task can leave useful work behind without silently granting an old agent permission to act.
 
-**Status: session-first terminal with live Luna execution and follow-up continuation exercised.** No manual goal creation is needed. This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) retains both a failed follow-up and its context-precedence repair. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocol](docs/EVALUATION.md) govern broader claims.
+**Status: streamed terminal replies, compact tool progress, and automatic local-file reopening; live Luna coding continuation exercised.** No manual goal creation is needed. This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) records the new workflow and earlier failures/repairs. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocol](docs/EVALUATION.md) govern broader claims.
 
 ## Run locally
 
@@ -41,7 +41,7 @@ New session. Just type a request; goals are saved automatically.
   to the prompt; at the prompt it clears input. End a line with `\` for multiline input.
 
 `chat` explicitly opens the same interface. `--model`, `--state`, `--source-dir`,
-`--context-budget` and the existing worker limits also work with the bare command
+`--fresh`, `--context-budget` and the existing worker limits work with the bare command
 or after `chat`. Source-checkout installations expose the same entry point as
 `goal-native` (for example `.venv/bin/goal-native`).
 
@@ -50,12 +50,22 @@ one session maps to one existing durable goal. Runs stay draft-only; sending
 another request also revokes any prior effect grant. Opening a session does not
 run, approve or resume paused work until you send a request.
 
-Files carry forward into a **fresh isolated stage** between requests in the same
-CLI process. After restarting, saved requests/artifacts remain available, but
-local files need explicit `--source-dir` or artifact selection. Imported run
-receipts never automatically select host directories. The CLI does not read
-your current directory unless selected. Responses currently appear at the end
-of a run; streaming/progress is the next UI improvement.
+Assistant replies stream as they arrive. One compact terminal line shows current
+tool activity; thinking blocks, raw tool results and traces stay out of the
+default view. A completed response is not printed twice.
+
+Files carry forward into a **fresh isolated stage**, including after restarting
+the CLI. `/resume` selects the session; sending a request restores its recorded
+local files and continues. Recovery metadata stays in this workspace's Store,
+outside portable exports. Imported receipts never select host directories.
+
+Use `--source-dir` or an artifact option to override the initial files, or
+`--fresh` to start with empty files while keeping saved requests/artifacts.
+In chat these options seed each selected session once; later requests carry its
+new work forward. Missing or symlinked recorded files stop with recovery guidance,
+not a silent empty workspace. Runs from before this feature, imported workspaces,
+and abrupt termination without a recorded local stage still require explicit
+file selection. The CLI does not read your current directory unless selected.
 
 ### Automation and advanced controls
 
@@ -96,9 +106,10 @@ python3 -m goal_native resume GOAL_ID --model gpt-6-luna \
   --artifact-id ARTIFACT_ID --artifact-path calculate.py --context-budget 32768
 ```
 
-Select an artifact ID from the summary, or pass `--source-dir` with a previously
-retained stage directory. Resuming always creates a new isolated stage; it does
-not silently reuse a mutable directory. Durable artifacts and current requests
+Without a file option, `run`/`resume` recover recorded local session files.
+Override that selection with an artifact ID from the summary or `--source-dir`;
+`--fresh` skips file recovery. Resuming always copies into a new isolated stage,
+never shares the old writable directory. Durable artifacts and current requests
 also feed the context compiler.
 
 The summary separates `goal_status`, individual invocations, and `recorded_runs`.

@@ -19,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .context import ContextBudget
 from .sandbox import Sandbox, SandboxError, SandboxUnavailable
@@ -384,9 +384,39 @@ def _credential(args: argparse.Namespace) -> tuple[str, str | None]:
 
 
 def _goal_stage_name(goal_id: str) -> str:
-    if re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", goal_id):
+    if goal_id not in {".", ".."} and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", goal_id):
         return goal_id
     return hashlib.sha256(goal_id.encode("utf-8")).hexdigest()[:32]
+
+
+def _stage_parent(state_root: Path, goal_id: str, *, create: bool = False) -> Path:
+    stages = state_root / "stages"
+    parent = stages / _goal_stage_name(goal_id)
+    for directory in (stages, parent):
+        if create:
+            directory.mkdir(exist_ok=True, mode=0o700)
+        if not stat.S_ISDIR(directory.lstat().st_mode):
+            raise ValueError("stage directories must be real directories, not symlinks")
+    return parent
+
+
+def _local_stage_path(store: Store, goal_id: str) -> Path | None:
+    name = store.local_stage(goal_id)
+    if name is None:
+        return None
+    try:
+        if not re.fullmatch(r"run-[A-Za-z0-9_-]{1,96}", name):
+            raise ValueError("invalid local stage name")
+        stage = _stage_parent(store.root, goal_id) / name
+        if not stat.S_ISDIR(stage.lstat().st_mode):
+            raise ValueError("local stage is not a real directory")
+        return stage
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            "Saved session files are missing or unsafe. Reopen with --source-dir or "
+            "--artifact-id to select files, or --fresh to continue with empty files "
+            "and saved artifacts. No files were restored."
+        ) from exc
 
 
 def _fence_interrupted_run(store: Store, goal_id: str) -> None:
@@ -399,7 +429,10 @@ def _fence_interrupted_run(store: Store, goal_id: str) -> None:
         store.request(goal_id, "CLI interrupted the active run", control="pause")
 
 
-def _run_existing(state: str, goal_id: str, args: argparse.Namespace) -> dict[str, Any]:
+def _run_existing(
+    state: str, goal_id: str, args: argparse.Namespace, *,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     state_root: Path | None = None
     stage_root: Path | None = None
     worker: Worker | None = None
@@ -407,14 +440,23 @@ def _run_existing(state: str, goal_id: str, args: argparse.Namespace) -> dict[st
     stage_manifest: dict[str, Any] = {"source": None, "artifact": None}
     try:
         context_budget = ContextBudget(max_context_tokens=args.context_budget)
+        run_args = argparse.Namespace(**vars(args))
+        selected = any(getattr(args, key, None) is not None for key in (
+            "source_dir", "artifact", "artifact_id", "artifact_name",
+        ))
+        if args.fresh and selected:
+            raise ValueError("choose --fresh or an explicit source/artifact, not both")
         model, api_key = _credential(args)
         state_root = _state_path(state)
         state_root.mkdir(parents=True, exist_ok=True)
         # Validate the durable identity before allocating a per-run capability.
         with Store(state_root) as store:
             store.goal(goal_id)
-        stage_parent = state_root / "stages" / _goal_stage_name(goal_id)
-        stage_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not selected and not args.fresh:
+                source = _local_stage_path(store, goal_id)
+                if source is not None:
+                    run_args.source_dir = str(source)
+        stage_parent = _stage_parent(state_root, goal_id, create=True)
         # Never reuse a writable root: replacement assignments get independent
         # capability directories, so a late old worker cannot corrupt a new run.
         stage_root = Path(tempfile.mkdtemp(prefix="run-", dir=stage_parent))
@@ -423,7 +465,7 @@ def _run_existing(state: str, goal_id: str, args: argparse.Namespace) -> dict[st
             store.goal(goal_id)
             sandbox = Sandbox(stage_root, timeout=args.max_time, require_os_sandbox=True)
             try:
-                stage_manifest = _stage_inputs(store, goal_id, args, sandbox, stage_root)
+                stage_manifest = _stage_inputs(store, goal_id, run_args, sandbox, stage_root)
                 worker = Worker(
                     store,
                     model,
@@ -434,6 +476,7 @@ def _run_existing(state: str, goal_id: str, args: argparse.Namespace) -> dict[st
                     max_total_seconds=args.max_time,
                     provider=args.provider,
                     auth_file=_auth_path(args) if args.provider == "openai-codex" else None,
+                    on_event=on_event,
                 )
                 started = True
                 try:
@@ -470,6 +513,8 @@ def _run_existing(state: str, goal_id: str, args: argparse.Namespace) -> dict[st
                     ) from exc
             finally:
                 sandbox.close()
+                if worker is not None and worker.last_assignment_id is not None:
+                    store.remember_local_stage(worker.last_assignment_id, stage_root.name)
     except CLICancelled:
         raise
     except KeyboardInterrupt as exc:
@@ -866,14 +911,103 @@ def _terminal_text(value: str) -> str:
     ))
 
 
+class _RunDisplay:
+    """Render public assistant text and tool activity, never reasoning or traces."""
+
+    def __init__(self) -> None:
+        self.stream = sys.stdout
+        self.tty = self.stream.isatty()
+        self.status_visible = False
+        self.line_open = False
+        self.seen: dict[int, int] = {}
+        self.text_index: int | None = None
+        self.last_reply: str | None = None
+        self._status("Working…")
+
+    def _clear_status(self) -> None:
+        if self.status_visible:
+            self.stream.write("\r\x1b[2K")
+            self.stream.flush()
+            self.status_visible = False
+
+    def _end_text(self) -> None:
+        if self.line_open:
+            self.stream.write("\n\n")
+            self.stream.flush()
+            self.line_open = False
+
+    def _status(self, text: str) -> None:
+        self._end_text()
+        if self.tty:
+            self._clear_status()
+            self.stream.write(text)
+            self.stream.flush()
+            self.status_visible = True
+        else:
+            print(text, file=sys.stderr, flush=True)
+
+    def _append(self, index: int, text: str) -> None:
+        if not text:
+            return
+        self._clear_status()
+        if self.text_index is not None and self.text_index != index:
+            self.stream.write("\n")
+        self.text_index = index
+        self.seen[index] = self.seen.get(index, 0) + len(text)
+        self.stream.write(_terminal_text(text))
+        self.stream.flush()
+        self.line_open = True
+
+    def event(self, _invocation_id: str, event: dict[str, Any]) -> None:
+        kind = event.get("type")
+        message = event.get("message", {})
+        if kind == "message_start" and message.get("role") == "assistant":
+            self.seen.clear()
+            self.text_index = None
+            self.last_reply = None
+        elif kind == "message_update":
+            delta = event.get("assistantMessageEvent", {})
+            if delta.get("type") == "text_delta":
+                self._append(delta["contentIndex"], delta["delta"])
+        elif kind == "message_end" and message.get("role") == "assistant":
+            texts = []
+            for index, part in enumerate(message.get("content", [])):
+                if part.get("type") == "text":
+                    text = part["text"]
+                    self._append(index, text[self.seen.get(index, 0):])
+                    texts.append(text)
+            self.last_reply = "\n".join(texts)
+            self._end_text()
+        elif kind == "tool_execution_start":
+            label = {
+                "staged_read": "Reading files…", "staged_write": "Writing files…",
+                "staged_search": "Searching files…", "staged_run": "Running Python…",
+                "read_artifact": "Reading saved work…", "save_artifact": "Saving work…",
+                "finding": "Saving a finding…",
+            }.get(event.get("toolName"), "Using a tool…")
+            self._status(label)
+        elif kind == "tool_execution_end":
+            self._status("Tool failed; continuing…" if event.get("isError") else "Working…")
+
+    def finish(self, result: dict[str, Any] | None = None) -> None:
+        self._clear_status()
+        self._end_text()
+        if result is not None:
+            reply = result.get("result") or "No response text returned."
+            if reply != self.last_reply:
+                print(_terminal_text(reply), file=self.stream, flush=True)
+                print(file=self.stream)
+
+
 def _chat_sessions(state: str) -> list[dict[str, Any]]:
     with Store(_state_path(state)) as store:
         return sorted(store.list_goals(), key=lambda goal: (goal["updated_at"], goal["id"]), reverse=True)
 
 
-def _chat_status(state: str, goal_id: str, stage: str | None) -> None:
+def _chat_status(state: str, goal_id: str) -> None:
     with Store(_state_path(state)) as store:
         summary = _goal_summary(store.goal(goal_id))
+        stage = _local_stage_path(store, goal_id)
     print(_terminal_text(f"\nSession  {summary['outcome']}\nID       {goal_id}"))
     runs = summary["recorded_runs"]
     run_status = runs[-1]["result"].get("status", "unknown") if runs else "not recorded"
@@ -900,7 +1034,7 @@ def _chat(args: argparse.Namespace) -> int:
     print("New session. Just type a request; goals are saved automatically.")
     print("/new  /sessions  /resume <number or id>  /status  /help  /exit\n")
     goal_id: str | None = None
-    stages: dict[str, str] = {}
+    seeded_goals: set[str] = set()
     listed_ids: list[str] = []
     last_status = 0
     while True:
@@ -965,15 +1099,14 @@ def _chat(args: argparse.Namespace) -> int:
                     last_status = 0
                     print(_terminal_text(f"\nResumed: {' '.join(goal['outcome'].split())[:72]}"))
                     print("Saved requests and artifacts are available. Type to continue.")
-                    if goal_id not in stages and not args.source_dir:
-                        print("Local files need an explicit --source-dir or artifact selection after reopening.")
+                    print("Local session files are recovered automatically when available.")
                     print()
                     continue
                 if command == "/status" and not argument:
                     if goal_id is None:
                         print("\nNew session; nothing saved until your first request.\n")
                     else:
-                        _chat_status(args.state, goal_id, stages.get(goal_id))
+                        _chat_status(args.state, goal_id)
                     continue
                 raise ValueError("Unknown command or arguments. Use /help.")
 
@@ -986,23 +1119,25 @@ def _chat(args: argparse.Namespace) -> int:
                     # carries an old effect grant into the conversational UI.
                     store.request(goal_id, text, control="draft")
             run_args = argparse.Namespace(**vars(args))
-            if goal_id in stages:
-                run_args.source_dir = stages[goal_id]
+            if goal_id in seeded_goals:
+                run_args.source_dir = None
+                run_args.fresh = False
                 run_args.artifact = run_args.artifact_id = run_args.artifact_name = None
                 run_args.artifact_path = None
-            print("\nWorking…", flush=True)
+            print()
+            display = _RunDisplay()
             try:
-                result = _run_existing(args.state, goal_id, run_args)
-            except CLICancelled as exc:
-                result = exc.payload
-            if result.get("stage_dir"):
-                # Only paths returned by this process are automatically copied.
-                # Imported receipts must never select host directories to read.
-                stages[goal_id] = result["stage_dir"]
+                try:
+                    result = _run_existing(args.state, goal_id, run_args, on_event=display.event)
+                except CLICancelled as exc:
+                    result = exc.payload
+                display.finish(result)
+            finally:
+                display.finish()
+            if result.get("run_started"):
+                seeded_goals.add(goal_id)
             status = result.get("status", "failed")
             last_status = 0 if status == "finished" else 130 if status == "cancelled" else 1
-            reply = result.get("result") or "No response text returned."
-            print(_terminal_text(f"\n{reply}\n"))
             if status != "finished":
                 print(_terminal_text(f"Run {status}. Request and any completed work are saved."))
                 print("Send a follow-up to continue, /status for details, or /new.\n")
@@ -1032,6 +1167,7 @@ def _add_worker_options(parser: argparse.ArgumentParser) -> None:
         help="conservative whole-request token ceiling including reserves (default: %(default)s); not a Codex output cap",
     )
     parser.add_argument("--source-dir", dest="source_dir", help="copy this selected local directory into the staged capability")
+    parser.add_argument("--fresh", action="store_true", help="start with empty local files; keep saved requests and artifacts")
     artifact_group = parser.add_mutually_exclusive_group()
     artifact_group.add_argument("--artifact", help="artifact id, or exact artifact name")
     artifact_group.add_argument("--artifact-id", help="named artifact id to stage")

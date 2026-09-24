@@ -10,6 +10,60 @@ Darwin 25.5 / arm64; Python 3.12.12; Node 22.23.2. Pi source is the submodule
 at `a7d17e39aaa0091c7573d0790714751956f10bd1`, package version `0.87.1`.
 `npm run build:upstream` passed, including the cloned credential-store build.
 
+## Streaming and local-file reopening checkpoint
+
+**66 application tests passed** under
+`.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -v`.
+New executed boundaries:
+
+- Actual CLI → pi → HTTP stream showed partial text while the fixture withheld
+  completion, then rendered the full answer once. JSON commands remained valid.
+- A separate CLI process reopened a session after the original selected input
+  was deleted; the retained file survived in a new stage. `--fresh` omitted it.
+- Missing and symlinked recovery root/parent/stage paths failed before a provider
+  invocation. Running invocations/path-valued names could not register recovery;
+  replaced assignments could not roll it back. Imported receipts and injected
+  recovery records did not select local files.
+- Cancelled work retained a local recovery reference without effect authority.
+- Review found an interruption window after durable admission but before the
+  first event/result. A deterministic regression failed with a missing recovery
+  reference before the repair and passes now. Recovery uses the Worker's retained
+  assignment identity and a transactional lookup of its stopped invocations,
+  not event delivery. Final CLI/HTTP smoke also reopened files in another
+  process after the original selected input was removed.
+
+Independent Luna/xhigh review approved the bounded repair after the
+failing-before/passing-after evidence and final CLI smoke. Classification:
+**INCREMENTAL / EMPIRICAL**, with no general reliability or safety proof.
+
+Actual **Codex / gpt-6-luna** pseudo-terminal, explicit 32768 context ceiling:
+the first request announced its work, wrote/executed `squares.py` for squares
+1–4, produced stdout `30`, and saved source. After exit and reopening **without
+source/artifact flags**, `/resume` plus a changed request produced stdout `55`
+for squares 1–5. Two distinct stage directories; the second input manifest
+records automatic copying of **1 file / 40 bytes**. The model read the saved
+artifact rather than invoking `staged_read`; no live local-file-read claim.
+
+All **9 invocations** reported usage: **12,479 input + 468 output = 12,947 total
+tokens**. Both runs exited 0, with draft goal, effects disabled and no acceptance.
+The terminal showed streamed text and reading/writing/running/saving activity;
+its captured PTY sequence overwrote the compact status line rather than adding
+per-token logs. This is an implementation smoke, not an efficiency benchmark.
+
+A separate actual PTY/local HTTP fixture emitted partial text, then received
+SIGINT. The prompt returned; a new request in the same session finished.
+Invocation states were `cancelled`, then `finished`; the goal stayed draft with
+effects disabled and CLI exit 0. This is **synthetic transport** evidence, not a
+live-model cancellation claim.
+
+Recovery metadata is local-only in the existing Store, not in portable exports.
+It is recorded after cleanup, guarded by assignment liveness, and never grants
+acceptance or execution authority. Old pre-feature runs, imports and abrupt
+death without a local recovery reference still need explicit file selection.
+Same-user host tampering, broad model correctness, browser UI and portable
+sandboxing are not established. Next checks: budget-stop recovery without losing
+files, and a reviewed staged-diff export workflow.
+
 ## Session-first terminal checkpoint
 
 Bare invocation now opens a fresh interactive session; the first request creates
@@ -198,5 +252,5 @@ are fixture values, not measured model costs.
    remain outstanding. Collapsed controls, synthetic protocol responses and
    passing tests establish no comparative efficiency or model-quality gain.
 5. The browser still exposes manual goal creation and many controls. The CLI now
-   starts session-first; streaming, automatic local-stage reopening and simpler
-   budget recovery remain the next product gaps.
+   streams and reopens local files. Budget recovery, staged-diff review/export
+   and a simpler installation path remain the next product gaps.

@@ -59,6 +59,19 @@ Its output remains untrusted historical work, not automatic acceptance or
 publication authority. CLI Ctrl-C also records a pause/control-version fence;
 transport abort alone is not a durable authority change.
 
+The terminal consumes a controller-only event callback after durable event
+capture. It renders public text and fixed tool labels, not thinking blocks,
+raw tool output or provider traces. No second provider loop or renderer thread.
+
+Local file recovery uses one non-exported table in the existing Store, not
+portable receipt paths or a second session database. A stopped invocation's
+assignment must still be active to update its goal's run-directory basename.
+Replaced runs cannot overwrite recovery metadata. The CLI derives and checks
+the workspace path, then copies files into a new isolated stage. Missing or
+symlinked recovery paths fail visibly; `--fresh` is an explicit empty-file choice.
+Same-user host tampering and abrupt-death task lifetime remain outside the
+claimed recovery guarantee.
+
 ## Baseline and limits
 
 The full pi coding-agent is a natural operational baseline, retaining its normal memory/session behavior. Sharing pi internals improves comparison fidelity but does not itself prove fairness or superiority. Match capabilities, safety and model settings; disclose differences. Hook documentation is not executed proof; verification records must state what was actually exercised, especially live cancellation, accounting and isolation.

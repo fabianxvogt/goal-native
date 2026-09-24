@@ -13,6 +13,8 @@ All returned objects JSON-compatible dictionaries/lists. IDs strings, timestamps
 - `receipt(invocation_id, tool, parameters, result, note='') -> receipt`: preserves full result, producer and exact parameters, note explicitly worker assertion.
 - `usage(invocation_id, usage_dict)`: record provider raw and normalized usage without reasoning/cache double count; unknown remains null, not zero.
 - `finish(invocation_id, status, result='')`: status finished/failed/cancelled/interrupted; no acceptance implied.
+- `local_stage(goal_id) -> str | None`: controller-only local run-directory basename, not a host path or portable artifact.
+- `remember_local_stage(assignment_id, stage_name) -> bool`: record stopped work after task cleanup; locate the last durable invocation for the exact assignment even if admission was interrupted before an event/result. Reject running invocations/path-valued names; return false for fenced assignments or no invocation. Local metadata stays out of exports and imports, including injected import fields.
 - `verify(invocation_id, artifact_id, check, passed, details, trusted=False) -> evidence`: bound immutable candidate; trusted only callable by controller/human, NEVER worker dispatch.
 - `prepare_effect(invocation_id, artifact_id, target, expected_version, evidence_id) -> effect`: mock record replacement, target string, uses exact candidate content. Require trusted passing current-candidate evidence; policy validates again at commitment. State prepared, id immutable.
 - `approve(effect_id) -> effect`: human exact-proposal approval; MUST revalidate original invocation freshness, authority, evidence/candidate/destination before approval. No input increment for unchanged approval.
@@ -25,6 +27,15 @@ All returned objects JSON-compatible dictionaries/lists. IDs strings, timestamps
 
 `Worker(store, model, api_key=None, max_rounds=12, sandbox=None, *, provider="openai-codex", auth_file=None, ...)`; `run(goal_id) -> dict` creates an assignment and supervises the pinned pi agent/AI runtime. Codex requires an explicit controller-only OAuth store path and rejects an API key. The legacy API profile requires `provider="openai"`; there is no billing fallback. Pi owns streaming, OAuth refresh and tool-loop mechanics; the controller owns context admission, invocation/usage/receipt capture and restricted tool execution. `cancel()` interrupts transport/task subprocesses; durable authority changes belong to Store controls. Each thread owns its Store connection.
 
+Optional `on_event(invocation_id, event)` receives admitted pi agent events after
+their receipt and applicable usage/finish records are persisted. It is a
+trusted controller callback, not a worker tool. The terminal renders text
+blocks/deltas and fixed tool labels, not thinking blocks or raw tool bodies.
+JSON execution commands attach no terminal display.
+Read-only `last_assignment_id` survives run cleanup for local recovery, including
+interruption immediately after durable invocation admission. It resets when
+the next run starts and does not authorize tools or effects.
+
 Supported tools: staged read/write/search/run, save_artifact and optional finding. No approve/verify trusted/commit/authority tools. Worker may prepare candidate, not authorize it. Tool results untrusted data. Staged files ONLY; reject symlinks, path escape and credential/controller paths. Arbitrary code must execute in verified OS sandbox or fail closed. Context compilation includes faithful request/constraints and known qualifications, hard admission including schema/history/output reserve, no silent required truncation. No provider credentials in task-tool environment. Persist actual model exchange for auditable capture cost. Pi integration must execute the real provider; fake transports are correctness-test fixtures only. No default pi host shell, ambient extension discovery or automatic compaction/model maintenance calls.
 
 Bare CLI invocation and `chat` open a terminal session, defaulting to Codex
@@ -35,8 +46,17 @@ requests call `request(..., control="draft")`, then the existing Worker path.
 changing authority. Cancelled goals cannot reopen. Sending a new request can
 resume paused work, but cannot grant effects.
 
-Same-process stages are copied through existing admission into new per-run
-directories. Persisted/imported receipt paths are not automatically reopened.
+CLI runs automatically recover a `local_stages` reference in the same Store,
+derive its path under the current workspace, reject symlinked/missing recovery
+directories, and copy through existing admission into a new isolated stage.
+No persisted/imported receipt path selects files. Explicit source/artifact
+options override recovery; `--fresh` opts into empty files without removing
+artifacts. Chat consumes those seed options once per selected session.
+After cleanup, the last invocation's still-active assignment can publish the
+local reference transactionally; a replaced run cannot roll it back. Ctrl-C
+can retain partial work without resuming authority. Abrupt death and
+no-invocation failures do not manufacture a recovery reference.
+
 The context compiler retains the complete request stream and supplies the
 latest request as the final user message, with explicit chronological precedence
 over conflicting earlier requests. Original outcome/revision records are not

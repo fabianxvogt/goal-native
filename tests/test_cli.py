@@ -418,6 +418,9 @@ class CLISubprocessTests(unittest.TestCase):
             shown = self.run_cli("show", "--state", str(state), created["id"])
             self.assertEqual("paused", shown["status"])
             self.assertFalse(any(item["status"] == "running" for item in shown["invocations"]))
+            from goal_native.store import Store
+            with Store(state) as store:
+                self.assertEqual(stage.name, store.local_stage(created["id"]))
 
     def test_chat_navigation_does_not_create_work_or_revive_cancelled_goals(self) -> None:
         from goal_native.store import Store
@@ -482,6 +485,87 @@ class CLISubprocessTests(unittest.TestCase):
                 self.assertFalse(saved["effects_allowed"])
                 self.assertEqual([], saved["invocations"])
                 self.assertEqual([], saved["acceptances"])
+
+    def test_interrupt_after_durable_admission_before_events_retains_files(self) -> None:
+        from goal_native import cli as cli_module
+        from goal_native.store import Store
+
+        class AdmissionBridge:
+            def run(self, request, *, rpc_handler, event_handler, cancel_event):
+                return rpc_handler("prepare_request", {
+                    "run_id": request["run_id"], "invocation_id": None,
+                    "context": {"messages": request["messages"], "tools": request["tools"]},
+                })
+
+        original_invoke = Store.invoke
+
+        def interrupt_after_commit(store, *args, **kwargs):
+            original_invoke(store, *args, **kwargs)
+            raise KeyboardInterrupt()
+
+        with tempfile.TemporaryDirectory(prefix="goal-native-admission-stop-") as temporary:
+            root = Path(temporary)
+            source = root / "input"
+            source.mkdir()
+            (source / "work.py").write_text("print(42)\n")
+            state = root / "state"
+            with Store(state) as store:
+                goal = store.create_goal("Keep files through admission interruption")
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {"ADMISSION_FIXTURE_KEY": "SYNTHETIC"}),
+                patch("goal_native.worker.PiBridge", return_value=AdmissionBridge()),
+                patch.object(Store, "invoke", interrupt_after_commit),
+                contextlib.redirect_stdout(output),
+            ):
+                status = cli_module.main([
+                    "run", goal["id"], "--state", str(state),
+                    "--provider", "openai", "--model", "gpt-4.1-mini",
+                    "--api-key-env", "ADMISSION_FIXTURE_KEY", "--source-dir", str(source),
+                ])
+            self.assertEqual(130, status, output.getvalue())
+            result = json.loads(output.getvalue())
+            with Store(state) as store:
+                self.assertEqual(Path(result["stage_dir"]).name, store.local_stage(goal["id"]))
+                self.assertEqual(["cancelled"], [v["status"] for v in store.goal(goal["id"])["invocations"]])
+            self.assertEqual("print(42)\n", (Path(result["stage_dir"]) / "work.py").read_text())
+
+    def test_missing_or_symlinked_recovery_files_fail_before_provider_execution(self) -> None:
+        from goal_native.store import Store
+
+        for boundary in ("missing", "stage", "parent", "root"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temporary:
+                state = Path(temporary) / "state"
+                with Store(state) as store:
+                    goal = store.create_goal("Restore only this session's files")
+                    assignment = store.assign(goal["id"])
+                    invocation = store.invoke(goal["id"], assignment["id"], {})
+                    store.finish(invocation["id"], "finished")
+                    store.remember_local_stage(assignment["id"], "run-files")
+                outside = Path(temporary) / "outside"
+                outside.mkdir()
+                (outside / "do-not-read.txt").write_text("Not an authorized stage")
+                paths = {
+                    "stage": state / "stages" / goal["id"] / "run-files",
+                    "parent": state / "stages" / goal["id"],
+                    "root": state / "stages",
+                }
+                if boundary != "missing":
+                    link = paths[boundary]
+                    link.parent.mkdir(parents=True, exist_ok=True)
+                    link.symlink_to(outside, target_is_directory=True)
+                environment = dict(os.environ, OPENAI_API_KEY="RECOVERY_FIXTURE_KEY",
+                                   OPENAI_BASE_URL="http://127.0.0.1:1/v1")
+                rejected = self.run_cli(
+                    "run", goal["id"], "--state", str(state),
+                    "--provider", "openai", "--model", "gpt-4.1-mini",
+                    expected=1, env=environment,
+                )
+                self.assertEqual("ValueError", rejected["type"])
+                with Store(state) as store:
+                    self.assertEqual([invocation["id"]],
+                                     [v["id"] for v in store.goal(goal["id"])["invocations"]])
+                self.assertEqual(["do-not-read.txt"], [p.name for p in outside.iterdir()])
 
     def test_terminal_output_neutralizes_untrusted_control_sequences(self) -> None:
         from goal_native.cli import _terminal_text

@@ -97,6 +97,40 @@ class StoreBoundaryTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.store.accept(revised["id"], artifact["id"], evidence["id"], revised["revision"])
 
+    def test_local_stage_recovery_cannot_be_rewound_by_a_replaced_assignment(self) -> None:
+        goal = self.store.create_goal("Continue local files")
+        first, _, _ = self._invocation_with_artifact(goal["id"])
+        with self.assertRaises(PermissionError):
+            self.store.remember_local_stage(first["assignment_id"], "run-first")
+        self.store.finish(first["id"], "finished")
+        self.assertTrue(self.store.remember_local_stage(first["assignment_id"], "run-first"))
+        second, _, _ = self._invocation_with_artifact(goal["id"])
+        self.store.finish(second["id"], "cancelled")
+        self.store.request(goal["id"], "Stop for now", control="pause")
+        self.assertTrue(self.store.remember_local_stage(second["assignment_id"], "run-second"))
+        self.assertFalse(self.store.remember_local_stage(first["assignment_id"], "run-first"))
+        self.assertEqual("run-second", self.store.local_stage(goal["id"]))
+        for path in ("../run-outside", "/tmp/run-outside", "run-a/../../outside"):
+            with self.assertRaises(ValueError):
+                self.store.remember_local_stage(second["assignment_id"], path)
+        self.assertEqual("run-second", self.store.local_stage(goal["id"]))
+
+    def test_imported_receipts_and_records_cannot_select_local_files(self) -> None:
+        goal = self.store.create_goal("Portable artifacts, not host file access")
+        invocation, _, _ = self._invocation_with_artifact(goal["id"])
+        self.store.finish(invocation["id"], "finished")
+        self.store.remember_local_stage(invocation["assignment_id"], "run-local")
+        self.store.receipt(invocation["id"], "controller.cli.run", {},
+                           {"stage_dir": "/untrusted/host/path", "status": "finished"})
+        exported = self.store.export()
+        self.assertNotIn("local_stages", exported["records"])
+        exported["records"]["local_stages"] = [{
+            "goal_id": goal["id"], "invocation_id": invocation["id"], "stage_name": "run-injected",
+        }]
+        with Store.import_data(Path(self.tempdir.name) / "restored", exported) as restored:
+            self.assertIsNone(restored.local_stage(goal["id"]))
+            self.assertFalse(restored.goal(goal["id"])["effects_allowed"])
+
     def test_effect_gateway_authority_cas_response_loss_and_idempotency(self) -> None:
         goal = self.store.create_goal("publish local draft")
         goal = self.store.request(goal["id"], "human permits mock effects", control="allow_effects")

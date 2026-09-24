@@ -5,10 +5,12 @@ performance baseline. No external network or real credential is used.
 """
 import json
 import os
+import select
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -67,6 +69,41 @@ class ProviderErrorFixture(ResponsesFixture):
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+class StreamingFixture(ResponsesFixture):
+    def do_POST(self):
+        self.server.requests.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+        item = {'type': 'message', 'id': 'msg_stream', 'role': 'assistant',
+                'status': 'completed', 'content': [{'type': 'output_text',
+                'text': 'Early streamed text. Final text.', 'annotations': []}]}
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+
+        def send(event):
+            self.wfile.write(('event: ' + event['type'] + '\ndata: ' + json.dumps(event) + '\n\n').encode())
+            self.wfile.flush()
+
+        send({'type': 'response.created', 'response': {'id': 'resp_stream', 'status': 'in_progress'}})
+        send({'type': 'response.output_item.added', 'output_index': 0, 'item': {**item, 'content': []}})
+        send({'type': 'response.content_part.added', 'item_id': item['id'], 'output_index': 0,
+              'content_index': 0, 'part': {'type': 'output_text', 'text': '', 'annotations': []}})
+        send({'type': 'response.output_text.delta', 'item_id': item['id'], 'output_index': 0,
+              'content_index': 0, 'delta': 'Early streamed text. '})
+        self.server.release.wait(20)
+        try:
+            send({'type': 'response.output_text.delta', 'item_id': item['id'], 'output_index': 0,
+                  'content_index': 0, 'delta': 'Final text.'})
+            send({'type': 'response.output_item.done', 'output_index': 0, 'item': item})
+            send({'type': 'response.completed', 'response': {
+                'id': 'resp_stream', 'object': 'response', 'status': 'completed',
+                'model': 'gpt-4.1-mini', 'output': [item],
+                'usage': {'input_tokens': 32, 'output_tokens': 8, 'total_tokens': 40},
+            }})
+        except OSError:
+            pass
 
 
 class CLITransportTests(unittest.TestCase):
@@ -183,6 +220,66 @@ class CLITransportTests(unittest.TestCase):
             self.assertEqual(len(server.requests), 4)
             self.assertIn('Useful saved transport-fixture work', json.dumps(server.requests[2]))
             self.assertNotIn('Useful saved transport-fixture work', json.dumps(server.requests[3]))
+            # Reopen in another process after removing the original input.
+            (source / 'note.txt').unlink()
+            reopened = subprocess.run(
+                [sys.executable, '-m', 'goal_native', '--state', str(state),
+                 '--provider', 'openai', '--model', 'gpt-4.1-mini'],
+                input=f"/resume {first['id']}\nContinue with my files\n/exit\n",
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30)
+            self.assertEqual(reopened.returncode, 0, reopened.stdout + reopened.stderr)
+            with Store(state) as store:
+                retained = store.local_stage(first['id'])
+                self.assertIsNotNone(retained)
+                restored_stage = state / 'stages' / first['id'] / retained
+                self.assertNotEqual(str(restored_stage.resolve()), runs[-1]['stage_dir'])
+                self.assertEqual((restored_stage / 'note.txt').read_text(), 'Selected source')
+            fresh = subprocess.run(
+                [sys.executable, '-m', 'goal_native', 'resume', first['id'], '--state', str(state),
+                 '--provider', 'openai', '--model', 'gpt-4.1-mini', '--fresh'],
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30)
+            self.assertEqual(fresh.returncode, 0, fresh.stdout + fresh.stderr)
+            self.assertFalse((Path(json.loads(fresh.stdout)['stage_dir']) / 'note.txt').exists())
+
+    def test_chat_shows_partial_text_before_provider_completion_without_repeating_it(self):
+        server = ThreadingHTTPServer(('127.0.0.1', 0), StreamingFixture)
+        server.requests = []
+        server.release = threading.Event()
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.release.set)
+        with tempfile.TemporaryDirectory(prefix='goal-native-streaming-') as temporary:
+            environment = dict(os.environ, HOME=temporary, OPENAI_API_KEY='STREAM_FIXTURE_KEY',
+                               OPENAI_BASE_URL=f'http://127.0.0.1:{server.server_port}/v1')
+            process = subprocess.Popen(
+                [sys.executable, '-m', 'goal_native', '--state', temporary,
+                 '--provider', 'openai', '--model', 'gpt-4.1-mini'],
+                cwd=ROOT, env=environment, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                process.stdin.write(b'Respond in two parts.\n/exit\n')
+                process.stdin.flush()
+                prefix = b''
+                deadline = time.monotonic() + 10
+                while b'Early streamed text. ' not in prefix and time.monotonic() < deadline:
+                    if select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))[0]:
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                        if not chunk:
+                            break
+                        prefix += chunk
+                self.assertIn(b'Early streamed text. ', prefix)
+                self.assertNotIn(b'Final text.', prefix)
+                self.assertIsNone(process.poll())
+                server.release.set()
+                suffix, stderr = process.communicate(timeout=15)
+                self.assertEqual(process.returncode, 0, (prefix + suffix + stderr).decode())
+                self.assertEqual((prefix + suffix).count(b'Early streamed text. Final text.'), 1)
+            finally:
+                server.release.set()
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=5)
 
 
 if __name__ == '__main__':

@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -133,6 +134,11 @@ class Store:
                     result TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     finished_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS local_stages (
+                    goal_id TEXT PRIMARY KEY REFERENCES goals(id),
+                    invocation_id TEXT NOT NULL REFERENCES invocations(id),
+                    stage_name TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS artifacts (
                     id TEXT PRIMARY KEY,
@@ -903,6 +909,46 @@ class Store:
                 {"revision": revision, "input_version": input_version},
             )
             return self._goal_public(conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone())
+
+    def local_stage(self, goal_id: str) -> str | None:
+        """Controller-only recovery metadata; never imported or exported."""
+        with self._lock:
+            self._goal_row(goal_id)
+            row = self._conn.execute(
+                "SELECT stage_name FROM local_stages WHERE goal_id = ?", (goal_id,)
+            ).fetchone()
+            return row["stage_name"] if row is not None else None
+
+    def remember_local_stage(self, assignment_id: str, stage_name: str) -> bool:
+        """Retain stopped work without letting a replaced run move recovery back."""
+        if not isinstance(stage_name, str) or not re.fullmatch(r"run-[A-Za-z0-9_-]{1,96}", stage_name):
+            raise ValueError("local stage must be a run directory name, not a path")
+        with self._transaction() as conn:
+            assignment = conn.execute(
+                "SELECT status FROM assignments WHERE id = ?", (assignment_id,)
+            ).fetchone()
+            if assignment is None:
+                raise KeyError(f"unknown assignment: {assignment_id}")
+            if assignment["status"] != "active":
+                return False
+            if conn.execute(
+                "SELECT 1 FROM invocations WHERE assignment_id = ? AND status = 'running' LIMIT 1",
+                (assignment_id,),
+            ).fetchone():
+                raise PermissionError("cannot remember files from a running invocation")
+            invocation = conn.execute(
+                "SELECT * FROM invocations WHERE assignment_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                (assignment_id,),
+            ).fetchone()
+            if invocation is None:
+                return False
+            conn.execute(
+                """INSERT INTO local_stages(goal_id, invocation_id, stage_name)
+                VALUES (?, ?, ?) ON CONFLICT(goal_id) DO UPDATE SET
+                    invocation_id = excluded.invocation_id, stage_name = excluded.stage_name""",
+                (invocation["goal_id"], invocation["id"], stage_name),
+            )
+            return True
 
     def assign(self, goal_id: str) -> dict[str, Any]:
         with self._transaction() as conn:

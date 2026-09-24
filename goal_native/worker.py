@@ -371,6 +371,7 @@ class Worker:
         max_total_seconds: float = 300.0,
         provider: str = "openai-codex",
         auth_file: str | Path | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("an explicit model is required")
@@ -392,11 +393,13 @@ class Worker:
         self.context_budget = context_budget or ContextBudget()
         self.max_total_seconds = float(max_total_seconds)
         self.bridge = bridge or PiBridge(api_key=api_key, timeout_seconds=self.max_total_seconds)
+        self.on_event = on_event
         self._cancel_event = threading.Event()
         self._lock = threading.Lock()
         self._active_bridge: Any | None = None
         self._goal_id: str | None = None
         self._assignment_id: str | None = None
+        self._last_assignment_id: str | None = None
         self._run_id: str | None = None
         self._run_fence: dict[str, Any] | None = None
         self._invocation_id: str | None = None
@@ -407,6 +410,11 @@ class Worker:
         self._run_gate = threading.Lock()
         self._started_at = 0.0
         self._provider_usage: dict[str, dict[str, Any]] = {}
+
+    @property
+    def last_assignment_id(self) -> str | None:
+        """Recovery identity survives cleanup; it is not execution authority."""
+        return self._last_assignment_id
 
     def cancel(self) -> None:
         self._cancel_event.set()
@@ -435,6 +443,7 @@ class Worker:
         self._goal_id = goal_id
         self._run_id = run_id
         self._assignment_id = None
+        self._last_assignment_id = None
         self._run_fence = None
         self._invocation_id = None
         self._last_invocation_id = None
@@ -444,6 +453,7 @@ class Worker:
         try:
             assignment = self.store.assign(goal_id)
             assignment_id = self._id(assignment, "assignment")
+            self._last_assignment_id = assignment_id
             goal = self.store.goal(goal_id)
             self._assignment_id = assignment_id
             self._run_fence = {
@@ -814,6 +824,8 @@ class Worker:
             if not result and isinstance(message, dict):
                 result = str(message.get("errorMessage", ""))
             self._finish_current(status, result)
+        if self.on_event is not None and envelope_type == "agent_event":
+            self.on_event(invocation_id, observed)
 
     def _finish_current(self, status: str, result: str) -> None:
         invocation_id = self._invocation_id
