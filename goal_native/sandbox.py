@@ -651,13 +651,14 @@ class Sandbox:
         env_prefix = self._casefold_regex(".env.")
         credential = self._casefold_regex("credential")
         secret = self._casefold_regex("secret")
+        # Seatbelt does not implement Python's (?:...) non-capturing groups.
         component = (
-            rf"(?:{exact_names}|{env_prefix}[^/]*|[^/]*[.](?:{suffixes})"
+            rf"({exact_names}|{env_prefix}[^/]*|[^/]*[.]({suffixes})"
             rf"|[^/]*{credential}[^/]*|{secret}[^/]*)"
         )
         return (
-            rf"^{re.escape(str(self.root))}/(?:[^/]+/)*"
-            rf"{component}(?:/|$)"
+            rf"^{re.escape(str(self.root))}/([^/]+/)*"
+            rf"{component}(/|$)"
         )
 
     def _runtime_directories(self) -> list[str]:

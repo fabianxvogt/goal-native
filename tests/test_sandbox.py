@@ -47,11 +47,13 @@ class SandboxTests(unittest.TestCase):
             self.assertEqual(0, result["exit_code"], result["stderr"])
             self.assertEqual("42\nstaged data\nargument\n", result["stdout"])
 
-    def test_execution_denies_environment_file_case_variants(self) -> None:
+    def test_execution_denies_secret_names_at_root_and_nested_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "check.py").write_text(
-                "for name in ['.env', '.ENV', '.eNv']:\n"
+                "from pathlib import Path\n"
+                "Path('nested').mkdir()\n"
+                "for name in ['.env', '.ENV', 'nested/.eNv', 'nested/credentials.json', 'nested/key.pem']:\n"
                 "    try:\n"
                 "        with open(name, 'w') as handle: handle.write('synthetic')\n"
                 "    except PermissionError:\n"
@@ -66,7 +68,8 @@ class SandboxTests(unittest.TestCase):
             finally:
                 sandbox.close()
             self.assertEqual(0, result["exit_code"], result["stderr"])
-            self.assertEqual(".env:DENIED\n.ENV:DENIED\n.eNv:DENIED\n", result["stdout"])
+            self.assertEqual(".env:DENIED\n.ENV:DENIED\nnested/.eNv:DENIED\n"
+                             "nested/credentials.json:DENIED\nnested/key.pem:DENIED\n", result["stdout"])
 
     def test_execution_uses_fixed_enforcer_and_trusted_interpreter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
