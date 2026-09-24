@@ -129,6 +129,7 @@ class StoreBoundaryTests(unittest.TestCase):
             stop_reason="context_budget",
             diagnostic={"kind": "context_budget", "message": "26400 estimated tokens > 16384"},
             admission={"total_tokens": 26400, "max_context_tokens": 16384},
+            rounds=0,
         )
         self.assertTrue(self.store.remember_local_stage(assignment["id"], "run-stopped"))
         self.assertEqual("run-stopped", self.store.local_stage(goal["id"]))
@@ -140,6 +141,49 @@ class StoreBoundaryTests(unittest.TestCase):
         self.assertFalse(self.store.remember_local_stage(assignment["id"], "run-old"))
         self.assertEqual("run-stopped", self.store.local_stage(goal["id"]))
         self.assertEqual("active", replacement["status"])
+
+        exported = self.store.export()
+        self.assertNotIn("stage_name", exported["records"]["runs"][0])
+        exported["records"]["runs"][0]["stage_name"] = "run-injected"
+        with Store.import_data(Path(self.tempdir.name) / "restored", exported) as restored:
+            recovered = restored.goal(goal["id"])
+            self.assertEqual("context_budget", recovered["runs"][0]["stop_reason"])
+            self.assertEqual(0, recovered["runs"][0]["rounds"])
+            self.assertEqual(26400, recovered["runs"][0]["admission"]["total_tokens"])
+            self.assertIsNone(restored.local_stage(goal["id"]))
+            self.assertFalse(recovered["effects_allowed"])
+        malformed = copy.deepcopy(exported)
+        malformed["records"]["runs"][0]["assignment_id"] = "unrelated"
+        with self.assertRaises(ValueError):
+            Store.import_data(Path(self.tempdir.name) / "invalid", malformed)
+
+    def test_published_stage_schema_migrates_without_losing_recovery(self) -> None:
+        goal = self.store.create_goal("Existing local work")
+        invocation, _, _ = self._invocation_with_artifact(goal["id"])
+        self.store.finish(invocation["id"], "finished")
+        with self.store._transaction() as conn:
+            conn.execute("DROP TABLE local_stages")
+            conn.execute("""CREATE TABLE local_stages (
+                goal_id TEXT PRIMARY KEY REFERENCES goals(id),
+                invocation_id TEXT NOT NULL REFERENCES invocations(id),
+                stage_name TEXT NOT NULL
+            )""")
+            conn.execute("INSERT INTO local_stages VALUES (?, ?, ?)",
+                         (goal["id"], invocation["id"], "run-existing"))
+        self.store.close()
+        self.store = Store(self.tempdir.name)
+        self.assertEqual("run-existing", self.store.local_stage(goal["id"]))
+        replacement = self.store.assign(goal["id"])
+        attempt = self.store.start_run(goal["id"], replacement["id"], {})
+        self.store.finish_run(attempt["id"], "interrupted", stop_reason="context_budget")
+        self.assertTrue(self.store.remember_local_stage(replacement["id"], "run-new"))
+        self.assertEqual("run-new", self.store.local_stage(goal["id"]))
+        legacy = self.store.export()
+        legacy["version"] = 1
+        del legacy["records"]["runs"]
+        with Store.import_data(Path(self.tempdir.name) / "legacy-import", legacy) as restored:
+            self.assertEqual(goal["outcome"], restored.goal(goal["id"])["outcome"])
+            self.assertIsNone(restored.local_stage(goal["id"]))
 
     def test_imported_receipts_and_records_cannot_select_local_files(self) -> None:
         goal = self.store.create_goal("Portable artifacts, not host file access")

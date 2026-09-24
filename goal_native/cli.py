@@ -360,6 +360,7 @@ def _run_existing(
                     run_args.recovered_stage = source.name
         # Never reuse a writable root: replacement assignments get independent
         # capability directories, so a late old worker cannot corrupt a new run.
+        stage_parent = _stage_parent(state_root, goal_id, create=True)
         stage_root = Path(tempfile.mkdtemp(prefix="run-", dir=stage_parent))
         os.chmod(stage_root, 0o700)
         with Store(state_root) as store:
@@ -625,21 +626,20 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
                 status = _auth_command(args, "status")
                 configured = bool(status.get("configured"))
                 expired = status.get("expired") if isinstance(status.get("expired"), bool) else None
-                usable = configured and expired is not True
+                usable = configured  # Pi refreshes expired access tokens on an explicit run.
                 credential_remediation: list[str] = []
                 if not configured:
                     credential_remediation.append("run python -m goal_native login explicitly")
-                elif expired:
-                    credential_remediation.append("refresh Codex authentication with python -m goal_native login")
                 if not model_selected:
                     credential_remediation.append("rerun doctor with an explicit --model value")
                 credentials = {
                     "ok": bool(usable and model_selected),
                     "provider": provider,
-                    "status": "ready" if usable and model_selected else ("expired" if expired else "missing"),
+                    "status": "ready" if usable and model_selected else "missing",
                     "configured": configured,
                     "credential_type": status.get("credential_type"),
                     "expired": expired,
+                    "refresh_on_run": bool(configured and expired),
                     "model_selected": model_selected,
                     "remediation": credential_remediation,
                 }
@@ -677,7 +677,6 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
             "remediation": credential_remediation,
         }
     checks["credentials"] = credentials
-    checks["config"] = dict(credentials)
     return {"ok": bool(runtime_ok and credentials["ok"]), "checks": checks}
 
 
@@ -1102,13 +1101,14 @@ def _chat_status(state: str, goal_id: str, args: argparse.Namespace | None = Non
         total = admission.get("total_tokens")
         ceiling = admission.get("max_context_tokens")
         headroom = ceiling - total if isinstance(ceiling, int) and isinstance(total, int) else "unknown"
-        print(_terminal_text(f"Budget   admitted {total} / {ceiling} tokens · headroom {headroom}"))
+        print(_terminal_text(f"Budget   estimated {total} / {ceiling} tokens · headroom {headroom} · not billed usage"))
     elif args is not None:
         print(_terminal_text(f"Budget   ceiling {args.context_budget} tokens · no admission recorded"))
     limits = run.get("limits") if isinstance(run, dict) else None
     rounds = limits.get("max_rounds") if isinstance(limits, dict) else (args.max_rounds if args else "unknown")
     seconds = limits.get("max_time") if isinstance(limits, dict) else (args.max_time if args else "unknown")
-    print(_terminal_text(f"Limits   rounds {rounds} · time {seconds}s"))
+    used_rounds = run.get("rounds") if isinstance(run, dict) else None
+    print(_terminal_text(f"Limits   rounds {used_rounds if used_rounds is not None else 'unknown'} / {rounds} · time {seconds}s"))
     print(_terminal_text(f"Goal     {summary['goal_status']} · run completion is not acceptance"))
     if stage:
         print(_terminal_text(f"Files    {stage}"))
@@ -1198,8 +1198,9 @@ def _chat(args: argparse.Namespace) -> int:
                     if len(values) > 1:
                         raise ValueError("usage: /budget [ceiling]")
                     if values:
-                        args.context_budget = _positive_int(values[0])
-                        ContextBudget(max_context_tokens=args.context_budget)
+                        ceiling = _positive_int(values[0])
+                        ContextBudget(max_context_tokens=ceiling)
+                        args.context_budget = ceiling
                     print(_terminal_text(f"Context ceiling: {args.context_budget} tokens (no provider call)"))
                     continue
                 if command == "/continue":
@@ -1211,11 +1212,13 @@ def _chat(args: argparse.Namespace) -> int:
                     limit_parser.add_argument("--max-time", type=_positive_float, dest="max_time", default=argparse.SUPPRESS)
                     limit_args = limit_parser.parse_args(shlex.split(argument))
                     run_args = argparse.Namespace(**vars(args))
-                    for name in ("source_dir", "artifact", "artifact_id", "artifact_name", "artifact_path"):
-                        setattr(run_args, name, None)
-                    run_args.fresh = False
+                    if goal_id in seeded_goals:
+                        for name in ("source_dir", "artifact", "artifact_id", "artifact_name", "artifact_path"):
+                            setattr(run_args, name, None)
+                        run_args.fresh = False
                     for name, value in vars(limit_args).items():
                         setattr(run_args, name, value)
+                    ContextBudget(max_context_tokens=run_args.context_budget)
                     with Store(_state_path(args.state)) as store:
                         store.reopen_for_run(goal_id)
                     execute(goal_id, run_args)

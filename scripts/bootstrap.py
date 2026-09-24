@@ -110,6 +110,12 @@ def _ensure_pi_submodule(git: str) -> None:
     submodule = ROOT / "upstream" / "pi"
     package = submodule / "package.json"
     git_marker = submodule / ".git"
+    remediation = "run git submodule update --init --recursive in the checkout, then rerun bootstrap"
+    if submodule.is_symlink() or (submodule.exists() and not submodule.is_dir()):
+        raise BootstrapError(
+            f"{submodule} is not a safe submodule directory; it was not changed. "
+            f"Remediation: move that path aside yourself, then {remediation}."
+        )
     if package.is_file() and git_marker.exists():
         status = _run(
             [git, "-C", str(submodule), "status", "--porcelain"],
@@ -122,29 +128,31 @@ def _ensure_pi_submodule(git: str) -> None:
                 f"{submodule} has uncommitted changes; the checkout was not changed. "
                 "Remediation: commit or stash those changes yourself, then rerun bootstrap."
             )
-        return
-
-    if submodule.is_symlink() or (submodule.exists() and not submodule.is_dir()):
-        raise BootstrapError(
-            f"{submodule} is not a safe submodule directory; the checkout was not changed. "
-            "Remediation: move that path aside yourself, then run git submodule update --init --recursive."
+    else:
+        if submodule.exists() and any(submodule.iterdir()):
+            raise BootstrapError(
+                f"{submodule} exists but is not an initialized pinned submodule; it was not changed. "
+                f"Remediation: move that directory aside yourself, then {remediation}."
+            )
+        _run(
+            [git, "-C", str(ROOT), "submodule", "update", "--init", "--recursive"],
+            label="pi submodule initialization",
+            remediation="verify Git access to the pinned pi submodule, then rerun bootstrap",
         )
-    if submodule.exists() and any(submodule.iterdir()):
+        if not package.is_file() or not git_marker.exists():
+            raise BootstrapError(f"the pinned pi submodule is unavailable. Remediation: {remediation}.")
+    expected = _run(
+        [git, "-C", str(ROOT), "rev-parse", "HEAD:upstream/pi"],
+        label="pi Git pin lookup", remediation=remediation, capture_output=True,
+    ).stdout.strip()
+    actual = _run(
+        [git, "-C", str(submodule), "rev-parse", "HEAD"],
+        label="pi revision lookup", remediation=remediation, capture_output=True,
+    ).stdout.strip()
+    if actual != expected:
         raise BootstrapError(
-            f"{submodule} exists but is not an initialized pinned submodule. "
-            "The checkout was not changed. Remediation: move that directory aside yourself, "
-            "then run git submodule update --init --recursive and rerun bootstrap."
-        )
-
-    _run(
-        [git, "-C", str(ROOT), "submodule", "update", "--init", "--recursive"],
-        label="pi submodule initialization",
-        remediation="verify Git access to the pinned pi submodule, then rerun bootstrap",
-    )
-    if not package.is_file() or not git_marker.exists():
-        raise BootstrapError(
-            "the pinned pi submodule is still unavailable after initialization. "
-            "Remediation: run git submodule update --init --recursive in the checkout and rerun bootstrap."
+            f"pi is at {actual}, but this checkout pins {expected}; it was not changed. "
+            f"Remediation: {remediation}."
         )
 
 
@@ -241,13 +249,13 @@ def main() -> int:
                 "Node.js 22.19+ is required. Remediation: upgrade Node.js and rerun bootstrap."
             )
         _ensure_source_checkout(git)
+        venv_python = _ensure_venv(sys.executable)
         _ensure_pi_submodule(git)
         _run(
             [npm, "run", "bootstrap:upstream"],
             label="pinned pi build/bootstrap",
             remediation="keep the checkout and pinned pi submodule intact, resolve the reported npm error, and rerun bootstrap",
         )
-        venv_python = _ensure_venv(sys.executable)
         _install_source_package(venv_python)
     except BootstrapError as exc:
         print(f"goal-native bootstrap: {exc}", file=sys.stderr)

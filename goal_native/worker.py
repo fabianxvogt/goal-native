@@ -412,6 +412,7 @@ class Worker:
         self._started_at = 0.0
         self._provider_usage: dict[str, dict[str, Any]] = {}
         self._admission: dict[str, Any] | None = None
+        self._admission_error: str | None = None
 
     @property
     def last_assignment_id(self) -> str | None:
@@ -442,6 +443,7 @@ class Worker:
         self._started_at = started
         self._provider_usage = {}
         self._admission = None
+        self._admission_error = None
         self._goal_id = goal_id
         self._run_id = None
         self._run_attempt_id = None
@@ -511,8 +513,13 @@ class Worker:
             text = result.get("result", "")
             if not isinstance(text, str):
                 raise BridgeError("pi bridge result text is not a string")
-            diagnostic = self._diagnostic(result.get("error"), "provider") if result.get("error") else {}
             stop_reason = result.get("stop_reason") or self._default_stop_reason(status)
+            diagnostic = self._diagnostic(result.get("error"), stop_reason) if result.get("error") else {}
+            if status == "cancelled":
+                stop_reason = "cancelled"
+            elif self._admission_error is not None:
+                status, stop_reason = "interrupted", "context_budget"
+                diagnostic = self._diagnostic(self._admission_error, stop_reason)
             invocation_id = self._last_invocation_id
             if invocation_id is not None and invocation_id not in self._finished_invocations:
                 self._finish_current(status, text)
@@ -533,8 +540,8 @@ class Worker:
             status = "cancelled" if self._cancel_event.is_set() else exc.status
             if status not in {"failed", "cancelled", "interrupted", "finished"}:
                 status = "failed"
-            reason = "context_budget" if "context budget" in str(exc).casefold() else "provider_error"
-            return self._stop_run(goal_id, status, reason, str(exc))
+            reason = "context_budget" if self._admission_error is not None else "provider_error"
+            return self._stop_run(goal_id, status, reason, self._admission_error or str(exc))
         except KeyboardInterrupt:
             self._stop_run(goal_id, "cancelled", "ctrl_c", "CLI interrupted by Ctrl-C")
             raise
@@ -601,6 +608,7 @@ class Worker:
                 assistant_text=assistant_text,
                 admission=self._admission,
                 invocation_id=invocation_id,
+                rounds=rounds,
             )
         return {
             "status": status,
@@ -628,7 +636,7 @@ class Worker:
             assistant_text,
             stop_reason,
             self._diagnostic(message, stop_reason),
-            0,
+            0 if invocation_id is None else None,
             invocation_id,
         )
 
@@ -636,13 +644,19 @@ class Worker:
         self._check_cancelled(self._started_at)
         if payload.get("run_id") not in {None, self._run_id}:
             raise PermissionError("pi RPC run fence mismatch")
-        if method == "prepare_request":
-            return self._prepare_request(payload)
-        if method == "tool_call":
-            return self._tool_call(payload)
-        if method == "provider_payload":
-            return self._provider_payload(payload)
-        raise BridgeError(f"unsupported pi RPC method: {method}")
+        try:
+            if method == "prepare_request":
+                return self._prepare_request(payload)
+            if method == "tool_call":
+                return self._tool_call(payload)
+            if method == "provider_payload":
+                return self._provider_payload(payload)
+            raise BridgeError(f"unsupported pi RPC method: {method}")
+        except ContextBudgetError as exc:
+            self._admission_error = str(exc)
+            if exc.usage is not None:
+                self._set_admission(asdict(exc.usage))
+            raise
 
     def _provider_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get("invocation_id") != self._invocation_id:
@@ -652,6 +666,7 @@ class Worker:
         if not isinstance(body, dict):
             raise ValueError("provider payload must be an object")
         admitted = self.context_budget.admit([body])
+        self._set_admission(asdict(admitted))
         self.store.receipt(
             self._invocation_id, "provider.pi.payload",
             {"model": payload.get("model"), "run_id": self._run_id},

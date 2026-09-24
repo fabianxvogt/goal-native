@@ -24,7 +24,7 @@ from typing import Any, Iterator
 
 
 _EXPORT_FORMAT = "goal-native-export"
-_EXPORT_VERSION = 1
+_EXPORT_VERSION = 2
 _ALLOWED_CONTROLS = {None, "pause", "cancel", "draft", "resume", "allow_effects"}
 _ALLOWED_FINISH_STATUSES = {"finished", "failed", "cancelled", "interrupted"}
 _ALLOWED_RUN_STATUSES = {"running", "finished", "failed", "cancelled", "interrupted"}
@@ -148,17 +148,13 @@ class Store:
                     limits_json TEXT NOT NULL DEFAULT '{}',
                     admission_json TEXT,
                     stage_name TEXT,
+                    rounds INTEGER,
                     created_at TEXT NOT NULL,
                     finished_at TEXT
                 );
-                CREATE TABLE IF NOT EXISTS run_stages (
-                    goal_id TEXT PRIMARY KEY REFERENCES goals(id),
-                    attempt_id TEXT NOT NULL REFERENCES run_attempts(id),
-                    stage_name TEXT NOT NULL
-                );
                 CREATE TABLE IF NOT EXISTS local_stages (
                     goal_id TEXT PRIMARY KEY REFERENCES goals(id),
-                    invocation_id TEXT NOT NULL REFERENCES invocations(id),
+                    assignment_id TEXT NOT NULL REFERENCES assignments(id),
                     stage_name TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS artifacts (
@@ -281,7 +277,6 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_assignments_goal ON assignments(goal_id, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_invocations_goal ON invocations(goal_id, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_run_attempts_goal ON run_attempts(goal_id, created_at, id);
-                CREATE INDEX IF NOT EXISTS idx_run_stages_attempt ON run_stages(attempt_id);
                 CREATE INDEX IF NOT EXISTS idx_artifacts_goal ON artifacts(goal_id, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_goal_links_goal ON goal_links(goal_id, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_receipts_invocation ON receipts(invocation_id, created_at, id);
@@ -293,6 +288,22 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_events_goal ON events(goal_id, created_at, id);
                 """
             )
+            with self._transaction() as conn:
+                if "rounds" not in {row["name"] for row in conn.execute("PRAGMA table_info(run_attempts)")}:
+                    conn.execute("ALTER TABLE run_attempts ADD COLUMN rounds INTEGER")
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(local_stages)")}
+                if "invocation_id" in columns:
+                    # Upgrade the published invocation-only recovery format once.
+                    conn.execute("ALTER TABLE local_stages RENAME TO old_local_stages")
+                    conn.execute("""CREATE TABLE local_stages (
+                        goal_id TEXT PRIMARY KEY REFERENCES goals(id),
+                        assignment_id TEXT NOT NULL REFERENCES assignments(id),
+                        stage_name TEXT NOT NULL
+                    )""")
+                    conn.execute("""INSERT INTO local_stages(goal_id, assignment_id, stage_name)
+                        SELECT old.goal_id, inv.assignment_id, old.stage_name
+                        FROM old_local_stages AS old JOIN invocations AS inv ON inv.id = old.invocation_id""")
+                    conn.execute("DROP TABLE old_local_stages")
             self._conn.execute(
                 """INSERT OR IGNORE INTO destination_history(
                     operation_id, target, version, content, effect_id, committed_at
@@ -502,6 +513,7 @@ class Store:
             "assignment_id": row["assignment_id"],
             "invocation_id": row["invocation_id"],
             "status": row["status"],
+            "rounds": row["rounds"],
             "stop_reason": row["stop_reason"] or None,
             "diagnostic": self._json_load(row["diagnostic_json"]),
             "assistant_text": row["assistant_text"],
@@ -1030,15 +1042,9 @@ class Store:
         with self._lock:
             self._goal_row(goal_id)
             row = self._conn.execute(
-                """SELECT stage_name FROM run_stages
-                WHERE goal_id = ?
-                ORDER BY rowid DESC LIMIT 1""",
+                "SELECT stage_name FROM local_stages WHERE goal_id = ?",
                 (goal_id,),
             ).fetchone()
-            if row is None:
-                row = self._conn.execute(
-                    "SELECT stage_name FROM local_stages WHERE goal_id = ?", (goal_id,)
-                ).fetchone()
             return row["stage_name"] if row is not None else None
 
     def remember_local_stage(self, assignment_id: str, stage_name: str) -> bool:
@@ -1068,27 +1074,21 @@ class Store:
                 if attempt["status"] == "running":
                     raise PermissionError("cannot remember files from a running attempt")
                 conn.execute(
-                    """INSERT INTO run_stages(goal_id, attempt_id, stage_name)
-                    VALUES (?, ?, ?) ON CONFLICT(goal_id) DO UPDATE SET
-                        attempt_id = excluded.attempt_id, stage_name = excluded.stage_name""",
-                    (attempt["goal_id"], attempt["id"], stage_name),
-                )
-                conn.execute(
                     "UPDATE run_attempts SET stage_name = ? WHERE id = ?",
                     (stage_name, attempt["id"]),
                 )
-                return True
-            invocation = conn.execute(
-                "SELECT * FROM invocations WHERE assignment_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
-                (assignment_id,),
-            ).fetchone()
-            if invocation is None:
-                return False
+            else:
+                invocation = conn.execute(
+                    "SELECT id FROM invocations WHERE assignment_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                    (assignment_id,),
+                ).fetchone()
+                if invocation is None:
+                    return False
             conn.execute(
-                """INSERT INTO local_stages(goal_id, invocation_id, stage_name)
+                """INSERT INTO local_stages(goal_id, assignment_id, stage_name)
                 VALUES (?, ?, ?) ON CONFLICT(goal_id) DO UPDATE SET
-                    invocation_id = excluded.invocation_id, stage_name = excluded.stage_name""",
-                (invocation["goal_id"], invocation["id"], stage_name),
+                    assignment_id = excluded.assignment_id, stage_name = excluded.stage_name""",
+                (assignment["goal_id"], assignment_id, stage_name),
             )
             return True
 
@@ -1206,10 +1206,13 @@ class Store:
         assistant_text: str = "",
         admission: dict[str, Any] | None = None,
         invocation_id: str | None = None,
+        rounds: int | None = None,
     ) -> dict[str, Any]:
         if status not in _ALLOWED_RUN_STATUSES - {"running"}:
             raise ValueError(f"unsupported run status: {status}")
         assistant_text = self._text(assistant_text, "assistant_text")
+        if rounds is not None:
+            rounds = self._integer(rounds, "run rounds", minimum=0)
         reason = "" if stop_reason is None else self._text(stop_reason, "stop_reason")
         diagnostic = {} if diagnostic is None else diagnostic
         if not isinstance(diagnostic, dict):
@@ -1235,11 +1238,11 @@ class Store:
                 """UPDATE run_attempts SET status = ?, stop_reason = ?,
                     diagnostic_json = ?, assistant_text = ?,
                     admission_json = COALESCE(?, admission_json),
-                    invocation_id = COALESCE(?, invocation_id), finished_at = ?
+                    invocation_id = COALESCE(?, invocation_id), finished_at = ?, rounds = ?
                     WHERE id = ?""",
                 (
                     status, reason, diagnostic_json, assistant_text,
-                    admission_json, invocation_id, finished_at, run_id,
+                    admission_json, invocation_id, finished_at, rounds, run_id,
                 ),
             )
             self._event(
@@ -1984,6 +1987,10 @@ class Store:
             "requests": requests,
             "assignments": assignments,
             "invocations": invocations,
+            "runs": [
+                {key: value for key, value in store._run_attempt_public(row).items() if key != "stage_name"}
+                for row in conn.execute("SELECT * FROM run_attempts ORDER BY created_at, id")
+            ],
             "artifacts": artifacts,
             "receipts": receipts,
             "usage": usage,
@@ -2016,7 +2023,7 @@ class Store:
     def import_data(cls, root: str | os.PathLike[str], data: dict[str, Any]) -> "Store":
         if not isinstance(data, dict):
             raise ValueError("import data must be an object")
-        if data.get("format") != _EXPORT_FORMAT or data.get("version") != _EXPORT_VERSION:
+        if data.get("format") != _EXPORT_FORMAT or type(data.get("version")) is not int or data["version"] not in (1, _EXPORT_VERSION):
             raise ValueError("unsupported export format")
         records = data.get("records")
         if not isinstance(records, dict):
@@ -2027,6 +2034,7 @@ class Store:
             "links",
             "assignments",
             "invocations",
+            "runs",
             "artifacts",
             "receipts",
             "usage",
@@ -2049,6 +2057,7 @@ class Store:
                         "requests",
                         "assignments",
                         "invocations",
+                        "run_attempts",
                         "artifacts",
                         "receipts",
                         "usage_records",
@@ -2279,6 +2288,46 @@ class Store:
                             cls._text(invocation.get("created_at"), "invocation created_at", allow_empty=False),
                             invocation.get("finished_at"),
                         ),
+                    )
+
+                for run in lists["runs"]:
+                    run_id = cls._text(run.get("id"), "run id", allow_empty=False)
+                    goal_id = cls._text(run.get("goal_id"), "run goal_id", allow_empty=False)
+                    assignment_id = cls._text(run.get("assignment_id"), "run assignment_id", allow_empty=False)
+                    if conn.execute(
+                        "SELECT 1 FROM assignments WHERE id = ? AND goal_id = ?", (assignment_id, goal_id)
+                    ).fetchone() is None:
+                        raise ValueError("imported run does not belong to its assignment")
+                    invocation_id = run.get("invocation_id")
+                    if invocation_id is not None and conn.execute(
+                        "SELECT 1 FROM invocations WHERE id = ? AND goal_id = ? AND assignment_id = ?",
+                        (cls._text(invocation_id, "run invocation_id"), goal_id, assignment_id),
+                    ).fetchone() is None:
+                        raise ValueError("imported run invocation does not match its assignment")
+                    status = cls._text(run.get("status"), "run status", allow_empty=False)
+                    if status not in _ALLOWED_RUN_STATUSES:
+                        raise ValueError("invalid imported run status")
+                    diagnostic, limits, admission = run.get("diagnostic", {}), run.get("limits", {}), run.get("admission")
+                    if not isinstance(diagnostic, dict) or not isinstance(limits, dict) or (admission is not None and not isinstance(admission, dict)):
+                        raise ValueError("invalid imported run metadata")
+                    rounds = run.get("rounds")
+                    if rounds is not None:
+                        rounds = cls._integer(rounds, "run rounds", minimum=0)
+                    conn.execute(
+                        """INSERT INTO run_attempts(
+                            id, goal_id, assignment_id, invocation_id, status, stop_reason,
+                            diagnostic_json, assistant_text, limits_json, admission_json,
+                            rounds, created_at, finished_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (run_id, goal_id, assignment_id, invocation_id,
+                         "interrupted" if status == "running" else status,
+                         "imported_unfinished" if status == "running" else cls._text(run.get("stop_reason") or "", "run stop_reason"),
+                         cls._json_dump(diagnostic, "run diagnostic"),
+                         cls._text(run.get("assistant_text", ""), "run assistant_text"),
+                         cls._json_dump(limits, "run limits"),
+                         cls._json_dump(admission, "run admission") if admission is not None else None,
+                         rounds, cls._text(run.get("created_at"), "run created_at", allow_empty=False),
+                         cls._now() if status == "running" else run.get("finished_at")),
                     )
 
                 imported_artifact_ids: set[str] = set()
