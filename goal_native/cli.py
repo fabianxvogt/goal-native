@@ -306,10 +306,26 @@ def _fence_interrupted_run(store: Store, goal_id: str) -> None:
     detail = store.goal(goal_id)
     for invocation in detail.get("invocations", []):
         if invocation.get("status") == "running":
-            store.finish(invocation["id"], "cancelled", "CLI interrupted by Ctrl-C")
+            store.finish(invocation["id"], "cancelled", invocation.get("result", ""))
+    for attempt in detail.get("runs", []):
+        if attempt.get("status") == "running":
+            invocation_id = attempt.get("invocation_id")
+            invocation = next(
+                (item for item in detail.get("invocations", []) if item.get("id") == invocation_id),
+                None,
+            )
+            store.finish_run(
+                attempt["id"],
+                "cancelled",
+                stop_reason="ctrl_c",
+                diagnostic={"kind": "ctrl_c", "message": "CLI interrupted by Ctrl-C"},
+                assistant_text=invocation.get("result", "") if invocation else "",
+                admission=attempt.get("admission"),
+                invocation_id=invocation_id,
+            )
     current = store.goal(goal_id)
     if current.get("status") not in {"cancelled", "paused"}:
-        store.request(goal_id, "CLI interrupted the active run", control="pause")
+        store.pause_for_interruption(goal_id, "CLI interrupted by Ctrl-C")
 
 
 def _run_existing(
@@ -324,6 +340,8 @@ def _run_existing(
     try:
         context_budget = ContextBudget(max_context_tokens=args.context_budget)
         run_args = argparse.Namespace(**vars(args))
+        if hasattr(run_args, "recovered_stage"):
+            delattr(run_args, "recovered_stage")
         selected = any(getattr(args, key, None) is not None for key in (
             "source_dir", "artifact", "artifact_id", "artifact_name",
         ))
@@ -339,7 +357,7 @@ def _run_existing(
                 source = _local_stage_path(store, goal_id)
                 if source is not None:
                     run_args.source_dir = str(source)
-        stage_parent = _stage_parent(state_root, goal_id, create=True)
+                    run_args.recovered_stage = source.name
         # Never reuse a writable root: replacement assignments get independent
         # capability directories, so a late old worker cannot corrupt a new run.
         stage_root = Path(tempfile.mkdtemp(prefix="run-", dir=stage_parent))
@@ -383,14 +401,22 @@ def _run_existing(
                 except KeyboardInterrupt as exc:
                     worker.cancel()
                     _fence_interrupted_run(store, goal_id)
+                    current = store.goal(goal_id)
+                    attempt = current.get("runs", [])[-1] if current.get("runs") else {}
                     raise CLICancelled(
                         {
                             "status": "cancelled",
                             "goal_id": goal_id,
+                            "run_id": attempt.get("id"),
+                            "stop_reason": attempt.get("stop_reason") or "ctrl_c",
+                            "diagnostic": attempt.get("diagnostic") or {
+                                "kind": "ctrl_c", "message": "CLI interrupted by Ctrl-C",
+                            },
+                            "admission": attempt.get("admission"),
                             "stage_dir": str(stage_root),
                             "stage_inputs": stage_manifest,
                             "run_started": True,
-                            "result": "CLI interrupted by Ctrl-C",
+                            "result": attempt.get("assistant_text", ""),
                             "exit_code": 130,
                         }
                     ) from exc
@@ -651,6 +677,20 @@ def _goal_summary(goal: dict[str, Any]) -> dict[str, Any]:
         }
         for invocation in goal["invocations"]
     ]
+    run_attempts = goal.get("runs", [])
+    historical_receipts = [
+        receipt for invocation in goal["invocations"]
+        for receipt in invocation["receipts"]
+        if receipt["tool"] == "controller.cli.run"
+    ]
+    recorded_runs = [
+        *historical_receipts,
+        *[
+            {"tool": "controller.run", "run_id": attempt["id"], "result": attempt}
+            for attempt in run_attempts
+            if attempt.get("invocation_id") is None
+        ],
+    ]
     return {
         **{key: goal[key] for key in (
             "id", "outcome", "revision", "input_version", "authority_version",
@@ -659,11 +699,9 @@ def _goal_summary(goal: dict[str, Any]) -> dict[str, Any]:
         "goal_status": goal["status"],
         "latest_invocation_status": invocations[-1]["status"] if invocations else None,
         "invocations": invocations,
-        "recorded_runs": [
-            receipt for invocation in goal["invocations"]
-            for receipt in invocation["receipts"]
-            if receipt["tool"] == "controller.cli.run"
-        ],
+        "run_attempts": run_attempts,
+        "latest_run": run_attempts[-1] if run_attempts else None,
+        "recorded_runs": recorded_runs,
         "artifacts": [
             {key: value for key, value in artifact.items() if key != "content"}
             for artifact in goal["artifacts"]
@@ -942,14 +980,34 @@ def _chat_sessions(state: str) -> list[dict[str, Any]]:
         return sorted(store.list_goals(), key=lambda goal: (goal["updated_at"], goal["id"]), reverse=True)
 
 
-def _chat_status(state: str, goal_id: str) -> None:
+def _chat_status(state: str, goal_id: str, args: argparse.Namespace | None = None) -> None:
     with Store(_state_path(state)) as store:
         summary = _goal_summary(store.goal(goal_id))
         stage = _local_stage_path(store, goal_id)
     print(_terminal_text(f"\nSession  {summary['outcome']}\nID       {goal_id}"))
-    runs = summary["recorded_runs"]
-    run_status = runs[-1]["result"].get("status", "unknown") if runs else "not recorded"
-    print(_terminal_text(f"Work     last recorded run: {run_status} · {len(summary['artifacts'])} saved artifacts"))
+    run = summary.get("latest_run")
+    if run is None:
+        runs = summary["recorded_runs"]
+        run = runs[-1]["result"] if runs else None
+    run_status = run.get("status", "not recorded") if isinstance(run, dict) else "not recorded"
+    reason = run.get("stop_reason") if isinstance(run, dict) else None
+    suffix = f" · {reason}" if reason else ""
+    print(_terminal_text(f"Work     last outcome: {run_status}{suffix} · {len(summary['artifacts'])} saved artifacts"))
+    diagnostic = run.get("diagnostic") if isinstance(run, dict) else None
+    if isinstance(diagnostic, dict) and diagnostic.get("message"):
+        print(_terminal_text(f"Detail   {diagnostic['message']}"))
+    admission = run.get("admission") if isinstance(run, dict) else None
+    if isinstance(admission, dict):
+        total = admission.get("total_tokens")
+        ceiling = admission.get("max_context_tokens")
+        headroom = ceiling - total if isinstance(ceiling, int) and isinstance(total, int) else "unknown"
+        print(_terminal_text(f"Budget   admitted {total} / {ceiling} tokens · headroom {headroom}"))
+    elif args is not None:
+        print(_terminal_text(f"Budget   ceiling {args.context_budget} tokens · no admission recorded"))
+    limits = run.get("limits") if isinstance(run, dict) else None
+    rounds = limits.get("max_rounds") if isinstance(limits, dict) else (args.max_rounds if args else "unknown")
+    seconds = limits.get("max_time") if isinstance(limits, dict) else (args.max_time if args else "unknown")
+    print(_terminal_text(f"Limits   rounds {rounds} · time {seconds}s"))
     print(_terminal_text(f"Goal     {summary['goal_status']} · run completion is not acceptance"))
     if stage:
         print(_terminal_text(f"Files    {stage}"))
@@ -976,6 +1034,26 @@ def _chat(args: argparse.Namespace) -> int:
     listed_ids: list[str] = []
     reviewed: dict[str, str] = {}
     last_status = 0
+    def execute(run_goal_id: str, run_args: argparse.Namespace) -> dict[str, Any]:
+        nonlocal last_status
+        print()
+        display = _RunDisplay()
+        try:
+            try:
+                result = _run_existing(args.state, run_goal_id, run_args, on_event=display.event)
+            except CLICancelled as exc:
+                result = exc.payload
+            display.finish(result)
+        finally:
+            display.finish()
+        if result.get("run_started"):
+            seeded_goals.add(run_goal_id)
+        status = result.get("status", "failed")
+        last_status = 0 if status == "finished" else 130 if status == "cancelled" else 1
+        if status != "finished":
+            print(_terminal_text(f"Run {status}. Request and any completed work are saved."))
+            print("Send a follow-up to continue, /status for details, or /new.\n")
+        return result
     while True:
         try:
             text = input("> ")
@@ -1002,7 +1080,9 @@ def _chat(args: argparse.Namespace) -> int:
                         "/new       Start a fresh session on the next request\n"
                         "/sessions  List saved sessions\n"
                         "/resume N  Open a listed session (or use its full ID)\n"
-                        "/status    Show work, goal state and local file location\n"
+                        "/status    Show work, goal state, latest outcome and budget headroom\n"
+                        "/budget [N]  Inspect or set the context ceiling; does not run\n"
+                        "/continue [worker limits]  Reuse the latest request without adding text\n"
                         "/files     Inspect selected files and exclusions\n"
                         "/changes   List staged changes and source divergence\n"
                         "/diff      Review the exact changes before export\n"
@@ -1011,6 +1091,33 @@ def _chat(args: argparse.Namespace) -> int:
                         "End a line with \\ for multiline input. Ctrl-C stops a run.\n"
                         "Draft-only: responses never approve or deliver effects.\n"
                     )
+                    continue
+                if command == "/budget":
+                    values = shlex.split(argument)
+                    if len(values) > 1:
+                        raise ValueError("usage: /budget [ceiling]")
+                    if values:
+                        args.context_budget = _positive_int(values[0])
+                        ContextBudget(max_context_tokens=args.context_budget)
+                    print(_terminal_text(f"Context ceiling: {args.context_budget} tokens (no provider call)"))
+                    continue
+                if command == "/continue":
+                    if goal_id is None:
+                        raise ValueError("no session is selected")
+                    limit_parser = _CLIArgumentParser(add_help=False)
+                    limit_parser.add_argument("--context-budget", type=_positive_int, default=argparse.SUPPRESS)
+                    limit_parser.add_argument("--max-rounds", type=_positive_int, default=argparse.SUPPRESS)
+                    limit_parser.add_argument("--max-time", type=_positive_float, dest="max_time", default=argparse.SUPPRESS)
+                    limit_args = limit_parser.parse_args(shlex.split(argument))
+                    run_args = argparse.Namespace(**vars(args))
+                    for name in ("source_dir", "artifact", "artifact_id", "artifact_name", "artifact_path"):
+                        setattr(run_args, name, None)
+                    run_args.fresh = False
+                    for name, value in vars(limit_args).items():
+                        setattr(run_args, name, value)
+                    with Store(_state_path(args.state)) as store:
+                        store.reopen_for_run(goal_id)
+                    execute(goal_id, run_args)
                     continue
                 if command == "/new" and not argument:
                     goal_id = None
@@ -1049,7 +1156,7 @@ def _chat(args: argparse.Namespace) -> int:
                     if goal_id is None:
                         print("\nNew session; nothing saved until your first request.\n")
                     else:
-                        _chat_status(args.state, goal_id)
+                        _chat_status(args.state, goal_id, args)
                     continue
                 if command in {"/files", "/changes", "/diff"} and not argument:
                     if goal_id is None:
@@ -1087,23 +1194,7 @@ def _chat(args: argparse.Namespace) -> int:
                 run_args.fresh = False
                 run_args.artifact = run_args.artifact_id = run_args.artifact_name = None
                 run_args.artifact_path = None
-            print()
-            display = _RunDisplay()
-            try:
-                try:
-                    result = _run_existing(args.state, goal_id, run_args, on_event=display.event)
-                except CLICancelled as exc:
-                    result = exc.payload
-                display.finish(result)
-            finally:
-                display.finish()
-            if result.get("run_started"):
-                seeded_goals.add(goal_id)
-            status = result.get("status", "failed")
-            last_status = 0 if status == "finished" else 130 if status == "cancelled" else 1
-            if status != "finished":
-                print(_terminal_text(f"Run {status}. Request and any completed work are saved."))
-                print("Send a follow-up to continue, /status for details, or /new.\n")
+            result = execute(goal_id, run_args)
         except Exception as exc:
             last_status = 1
             print(_terminal_text(f"\nError: {exc}\n"))

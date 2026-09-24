@@ -115,6 +115,32 @@ class StoreBoundaryTests(unittest.TestCase):
                 self.store.remember_local_stage(second["assignment_id"], path)
         self.assertEqual("run-second", self.store.local_stage(goal["id"]))
 
+    def test_run_attempt_recovers_zero_invocation_and_rejects_stale_stage(self) -> None:
+        goal = self.store.create_goal("Recover a stopped staged request")
+        assignment = self.store.assign(goal["id"])
+        attempt = self.store.start_run(
+            goal["id"],
+            assignment["id"],
+            {"context_budget": 16_384, "max_rounds": 1},
+        )
+        self.store.finish_run(
+            attempt["id"],
+            "interrupted",
+            stop_reason="context_budget",
+            diagnostic={"kind": "context_budget", "message": "26400 estimated tokens > 16384"},
+            admission={"total_tokens": 26400, "max_context_tokens": 16384},
+        )
+        self.assertTrue(self.store.remember_local_stage(assignment["id"], "run-stopped"))
+        self.assertEqual("run-stopped", self.store.local_stage(goal["id"]))
+        saved = self.store.goal(goal["id"])
+        self.assertEqual([], saved["invocations"])
+        self.assertEqual("context_budget", saved["runs"][0]["stop_reason"])
+        self.assertEqual(26400, saved["runs"][0]["admission"]["total_tokens"])
+        replacement = self.store.assign(goal["id"])
+        self.assertFalse(self.store.remember_local_stage(assignment["id"], "run-old"))
+        self.assertEqual("run-stopped", self.store.local_stage(goal["id"]))
+        self.assertEqual("active", replacement["status"])
+
     def test_imported_receipts_and_records_cannot_select_local_files(self) -> None:
         goal = self.store.create_goal("Portable artifacts, not host file access")
         invocation, _, _ = self._invocation_with_artifact(goal["id"])

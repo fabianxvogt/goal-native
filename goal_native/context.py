@@ -10,6 +10,10 @@ from typing import Any, Iterable, Mapping, Sequence
 class ContextBudgetError(ValueError):
     """Required context, schema, history, and output reserve do not fit."""
 
+    def __init__(self, message: str, usage: "ContextUsage | None" = None) -> None:
+        super().__init__(message)
+        self.usage = usage
+
 
 @dataclass(frozen=True)
 class ContextBudget:
@@ -76,7 +80,8 @@ class ContextBudget:
         if total > self.max_context_tokens:
             raise ContextBudgetError(
                 "whole context exceeds hard budget: "
-                f"{total} estimated tokens > {self.max_context_tokens}"
+                f"{total} estimated tokens > {self.max_context_tokens}",
+                usage,
             )
         return usage
 

@@ -27,6 +27,7 @@ _EXPORT_FORMAT = "goal-native-export"
 _EXPORT_VERSION = 1
 _ALLOWED_CONTROLS = {None, "pause", "cancel", "draft", "resume", "allow_effects"}
 _ALLOWED_FINISH_STATUSES = {"finished", "failed", "cancelled", "interrupted"}
+_ALLOWED_RUN_STATUSES = {"running", "finished", "failed", "cancelled", "interrupted"}
 
 
 class Store:
@@ -134,6 +135,26 @@ class Store:
                     result TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     finished_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS run_attempts (
+                    id TEXT PRIMARY KEY,
+                    goal_id TEXT NOT NULL REFERENCES goals(id),
+                    assignment_id TEXT NOT NULL REFERENCES assignments(id),
+                    invocation_id TEXT REFERENCES invocations(id),
+                    status TEXT NOT NULL,
+                    stop_reason TEXT NOT NULL DEFAULT '',
+                    diagnostic_json TEXT NOT NULL DEFAULT '{}',
+                    assistant_text TEXT NOT NULL DEFAULT '',
+                    limits_json TEXT NOT NULL DEFAULT '{}',
+                    admission_json TEXT,
+                    stage_name TEXT,
+                    created_at TEXT NOT NULL,
+                    finished_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS run_stages (
+                    goal_id TEXT PRIMARY KEY REFERENCES goals(id),
+                    attempt_id TEXT NOT NULL REFERENCES run_attempts(id),
+                    stage_name TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS local_stages (
                     goal_id TEXT PRIMARY KEY REFERENCES goals(id),
@@ -259,6 +280,8 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_requests_goal ON requests(goal_id, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_assignments_goal ON assignments(goal_id, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_invocations_goal ON invocations(goal_id, created_at, id);
+                CREATE INDEX IF NOT EXISTS idx_run_attempts_goal ON run_attempts(goal_id, created_at, id);
+                CREATE INDEX IF NOT EXISTS idx_run_stages_attempt ON run_stages(attempt_id);
                 CREATE INDEX IF NOT EXISTS idx_artifacts_goal ON artifacts(goal_id, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_goal_links_goal ON goal_links(goal_id, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_receipts_invocation ON receipts(invocation_id, created_at, id);
@@ -462,6 +485,36 @@ class Store:
             ).fetchall()
         ]
         return result
+
+    def run_attempts(self, goal_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            self._goal_row(goal_id)
+            rows = self._conn.execute(
+                "SELECT * FROM run_attempts WHERE goal_id = ? ORDER BY created_at, id",
+                (goal_id,),
+            ).fetchall()
+            return [self._run_attempt_public(row) for row in rows]
+    def _run_attempt_public(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "run_id": row["id"],
+            "goal_id": row["goal_id"],
+            "assignment_id": row["assignment_id"],
+            "invocation_id": row["invocation_id"],
+            "status": row["status"],
+            "stop_reason": row["stop_reason"] or None,
+            "diagnostic": self._json_load(row["diagnostic_json"]),
+            "assistant_text": row["assistant_text"],
+            "result": row["assistant_text"],
+            "limits": self._json_load(row["limits_json"]),
+            "admission": (
+                self._json_load(row["admission_json"])
+                if row["admission_json"] is not None else None
+            ),
+            "stage_name": row["stage_name"],
+            "created_at": row["created_at"],
+            "finished_at": row["finished_at"],
+        }
 
     def _artifact_public(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -821,6 +874,13 @@ class Store:
                     "SELECT * FROM invocations WHERE goal_id = ? ORDER BY created_at, id", (goal_id,)
                 ).fetchall()
             ]
+            result["runs"] = [
+                self._run_attempt_public(attempt)
+                for attempt in self._conn.execute(
+                    "SELECT * FROM run_attempts WHERE goal_id = ? ORDER BY created_at, id",
+                    (goal_id,),
+                ).fetchall()
+            ]
             result["effects"] = self.effects(goal_id)
             result["events"] = [
                 self._event_public(event)
@@ -887,6 +947,50 @@ class Store:
             )
             return self._goal_public(conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone())
 
+    def pause_for_interruption(self, goal_id: str, reason: str = "run interrupted") -> dict[str, Any]:
+        reason = self._text(reason, "reason", allow_empty=False)
+        with self._transaction() as conn:
+            goal = self._goal_row(goal_id)
+            if goal["status"] == "cancelled":
+                return self._goal_public(goal)
+            authority_version = goal["authority_version"] + 1
+            now = self._now()
+            conn.execute(
+                """UPDATE goals SET status = 'paused', effects_allowed = 0,
+                    authority_version = ?, updated_at = ? WHERE id = ?""",
+                (authority_version, now, goal_id),
+            )
+            self._event(
+                conn,
+                goal_id,
+                "run_paused",
+                {"reason": reason, "authority_version": authority_version},
+            )
+            return self._goal_public(conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone())
+
+    def reopen_for_run(self, goal_id: str) -> dict[str, Any]:
+        with self._transaction() as conn:
+            goal = self._goal_row(goal_id)
+            if goal["status"] == "cancelled":
+                raise PermissionError("cancelled goals cannot be reopened")
+            status = "active" if goal["status"] == "paused" else goal["status"]
+            authority_version = goal["authority_version"]
+            if status != goal["status"] or goal["effects_allowed"]:
+                authority_version += 1
+            now = self._now()
+            conn.execute(
+                """UPDATE goals SET status = ?, effects_allowed = 0,
+                    authority_version = ?, updated_at = ? WHERE id = ?""",
+                (status, authority_version, now, goal_id),
+            )
+            self._event(
+                conn,
+                goal_id,
+                "run_reopened",
+                {"authority_version": authority_version},
+            )
+            return self._goal_public(conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone())
+
     def revise(
         self,
         goal_id: str,
@@ -926,8 +1030,15 @@ class Store:
         with self._lock:
             self._goal_row(goal_id)
             row = self._conn.execute(
-                "SELECT stage_name FROM local_stages WHERE goal_id = ?", (goal_id,)
+                """SELECT stage_name FROM run_stages
+                WHERE goal_id = ?
+                ORDER BY rowid DESC LIMIT 1""",
+                (goal_id,),
             ).fetchone()
+            if row is None:
+                row = self._conn.execute(
+                    "SELECT stage_name FROM local_stages WHERE goal_id = ?", (goal_id,)
+                ).fetchone()
             return row["stage_name"] if row is not None else None
 
     def remember_local_stage(self, assignment_id: str, stage_name: str) -> bool:
@@ -936,7 +1047,7 @@ class Store:
             raise ValueError("local stage must be a run directory name, not a path")
         with self._transaction() as conn:
             assignment = conn.execute(
-                "SELECT status FROM assignments WHERE id = ?", (assignment_id,)
+                "SELECT * FROM assignments WHERE id = ?", (assignment_id,)
             ).fetchone()
             if assignment is None:
                 raise KeyError(f"unknown assignment: {assignment_id}")
@@ -947,6 +1058,26 @@ class Store:
                 (assignment_id,),
             ).fetchone():
                 raise PermissionError("cannot remember files from a running invocation")
+            attempt = conn.execute(
+                """SELECT * FROM run_attempts
+                WHERE assignment_id = ?
+                ORDER BY created_at DESC, id DESC LIMIT 1""",
+                (assignment_id,),
+            ).fetchone()
+            if attempt is not None:
+                if attempt["status"] == "running":
+                    raise PermissionError("cannot remember files from a running attempt")
+                conn.execute(
+                    """INSERT INTO run_stages(goal_id, attempt_id, stage_name)
+                    VALUES (?, ?, ?) ON CONFLICT(goal_id) DO UPDATE SET
+                        attempt_id = excluded.attempt_id, stage_name = excluded.stage_name""",
+                    (attempt["goal_id"], attempt["id"], stage_name),
+                )
+                conn.execute(
+                    "UPDATE run_attempts SET stage_name = ? WHERE id = ?",
+                    (stage_name, attempt["id"]),
+                )
+                return True
             invocation = conn.execute(
                 "SELECT * FROM invocations WHERE assignment_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
                 (assignment_id,),
@@ -990,6 +1121,136 @@ class Store:
                 conn.execute("SELECT * FROM assignments WHERE id = ?", (assignment_id,)).fetchone()
             )
 
+    def start_run(
+        self,
+        goal_id: str,
+        assignment_id: str,
+        limits: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        limits = {} if limits is None else limits
+        if not isinstance(limits, dict):
+            raise ValueError("run limits must be an object")
+        limits_json = self._json_dump(limits, "run limits")
+        with self._transaction() as conn:
+            goal = self._goal_row(goal_id)
+            assignment = conn.execute(
+                "SELECT * FROM assignments WHERE id = ? AND goal_id = ?",
+                (assignment_id, goal_id),
+            ).fetchone()
+            if assignment is None:
+                raise KeyError(f"unknown assignment for goal: {assignment_id}")
+            if assignment["status"] != "active":
+                raise PermissionError("assignment is fenced")
+            if any(
+                assignment[key] != goal[key]
+                for key in ("revision", "input_version", "authority_version")
+            ):
+                raise PermissionError("assignment snapshot is stale")
+            run_id = self._id()
+            now = self._now()
+            conn.execute(
+                """INSERT INTO run_attempts(
+                    id, goal_id, assignment_id, status, stop_reason,
+                    diagnostic_json, assistant_text, limits_json, created_at
+                ) VALUES (?, ?, ?, 'running', '', '{}', '', ?, ?)""",
+                (run_id, goal_id, assignment_id, limits_json, now),
+            )
+            self._event(conn, goal_id, "run_started", {"run_id": run_id, "assignment_id": assignment_id})
+            return self._run_attempt_public(
+                conn.execute("SELECT * FROM run_attempts WHERE id = ?", (run_id,)).fetchone()
+            )
+
+    def record_run_admission(self, run_id: str, admission: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(admission, dict):
+            raise ValueError("run admission must be an object")
+        admission_json = self._json_dump(admission, "run admission")
+        with self._transaction() as conn:
+            run = conn.execute("SELECT * FROM run_attempts WHERE id = ?", (run_id,)).fetchone()
+            if run is None:
+                raise KeyError(f"unknown run: {run_id}")
+            if run["status"] != "running":
+                raise PermissionError("finished run is immutable")
+            conn.execute(
+                "UPDATE run_attempts SET admission_json = ? WHERE id = ?",
+                (admission_json, run_id),
+            )
+            return self._run_attempt_public(
+                conn.execute("SELECT * FROM run_attempts WHERE id = ?", (run_id,)).fetchone()
+            )
+
+    def bind_run_invocation(self, run_id: str, invocation_id: str) -> dict[str, Any]:
+        with self._transaction() as conn:
+            run = conn.execute("SELECT * FROM run_attempts WHERE id = ?", (run_id,)).fetchone()
+            if run is None:
+                raise KeyError(f"unknown run: {run_id}")
+            invocation = self._invocation_row(invocation_id)
+            if invocation["goal_id"] != run["goal_id"] or invocation["assignment_id"] != run["assignment_id"]:
+                raise PermissionError("run invocation fence rejected")
+            if run["status"] != "running":
+                raise PermissionError("finished run is immutable")
+            conn.execute(
+                "UPDATE run_attempts SET invocation_id = ? WHERE id = ?",
+                (invocation_id, run_id),
+            )
+            return self._run_attempt_public(
+                conn.execute("SELECT * FROM run_attempts WHERE id = ?", (run_id,)).fetchone()
+            )
+
+    def finish_run(
+        self,
+        run_id: str,
+        status: str,
+        *,
+        stop_reason: str | None = None,
+        diagnostic: dict[str, Any] | None = None,
+        assistant_text: str = "",
+        admission: dict[str, Any] | None = None,
+        invocation_id: str | None = None,
+    ) -> dict[str, Any]:
+        if status not in _ALLOWED_RUN_STATUSES - {"running"}:
+            raise ValueError(f"unsupported run status: {status}")
+        assistant_text = self._text(assistant_text, "assistant_text")
+        reason = "" if stop_reason is None else self._text(stop_reason, "stop_reason")
+        diagnostic = {} if diagnostic is None else diagnostic
+        if not isinstance(diagnostic, dict):
+            raise ValueError("run diagnostic must be an object")
+        admission_json = None
+        if admission is not None:
+            if not isinstance(admission, dict):
+                raise ValueError("run admission must be an object")
+            admission_json = self._json_dump(admission, "run admission")
+        diagnostic_json = self._json_dump(diagnostic, "run diagnostic")
+        with self._transaction() as conn:
+            run = conn.execute("SELECT * FROM run_attempts WHERE id = ?", (run_id,)).fetchone()
+            if run is None:
+                raise KeyError(f"unknown run: {run_id}")
+            if run["status"] != "running":
+                return self._run_attempt_public(run)
+            if invocation_id is not None:
+                invocation = self._invocation_row(invocation_id)
+                if invocation["goal_id"] != run["goal_id"] or invocation["assignment_id"] != run["assignment_id"]:
+                    raise PermissionError("run invocation fence rejected")
+            finished_at = self._now()
+            conn.execute(
+                """UPDATE run_attempts SET status = ?, stop_reason = ?,
+                    diagnostic_json = ?, assistant_text = ?,
+                    admission_json = COALESCE(?, admission_json),
+                    invocation_id = COALESCE(?, invocation_id), finished_at = ?
+                    WHERE id = ?""",
+                (
+                    status, reason, diagnostic_json, assistant_text,
+                    admission_json, invocation_id, finished_at, run_id,
+                ),
+            )
+            self._event(
+                conn,
+                run["goal_id"],
+                "run_finished",
+                {"run_id": run_id, "status": status, "stop_reason": reason or None},
+            )
+            return self._run_attempt_public(
+                conn.execute("SELECT * FROM run_attempts WHERE id = ?", (run_id,)).fetchone()
+            )
     def invoke(
         self,
         goal_id: str,
@@ -1019,6 +1280,7 @@ class Store:
             if any(
                 assignment[key] != goal[key]
                 for key in ("revision", "input_version", "authority_version")
+
             ):
                 raise PermissionError("assignment snapshot is stale")
             invocation_id = self._id()

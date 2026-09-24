@@ -385,26 +385,31 @@ export async function runAgent(options) {
   });
   let status = "finished";
   let error;
+  let stopReason = "completed";
   try {
     await authPreflight?.();
     await agent.continue();
     await agent.waitForIdle();
     if (agent.state.errorMessage) {
       status = options.cancelled?.() ? "cancelled" : "failed";
+      stopReason = options.cancelled?.() ? "cancelled" : "agent_error";
       error = safeRuntimeError(agent.state.errorMessage);
     }
   } catch (caught) {
     status = options.cancelled?.() ? "cancelled" : (caught?.status || "failed");
+    stopReason = options.cancelled?.() ? "cancelled" : (caught?.status === "interrupted" ? "provider_interrupt" : "provider_error");
     error = safeRuntimeError(caught);
   }
   const lastAssistant = [...agent.state.messages].reverse().find((message) => message?.role === "assistant");
   const resultText = messageText(lastAssistant);
   if (status === "finished" && rounds() >= options.maxRounds && lastAssistant?.stopReason === "toolUse") {
     status = "interrupted";
+    stopReason = "round_limit";
     error = "pi agent round budget exhausted before completion";
   }
   return {
     status,
+    stop_reason: stopReason,
     invocation_id: invocationId(),
     rounds: rounds(),
     result: resultText,

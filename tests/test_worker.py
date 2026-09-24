@@ -30,6 +30,21 @@ class InterruptedResponse:
         return {'status': 'finished', 'rounds': 1, 'result': 'Fixture response finished'}
 
 
+class TextWithDiagnosticResponse(InterruptedResponse):
+    def run(self, request, *, rpc_handler, event_handler, cancel_event):
+        rpc_handler('prepare_request', {
+            'run_id': request['run_id'], 'invocation_id': None,
+            'context': {'messages': request['messages'], 'tools': request['tools']},
+            'model': {'id': request['model'], 'contextWindow': 128000, 'maxTokens': 4096},
+        })
+        return {
+            'status': 'interrupted',
+            'stop_reason': 'round_limit',
+            'rounds': 1,
+            'result': 'partial assistant text',
+            'error': 'pi agent round budget exhausted before completion',
+        }
+
 class WorkerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -66,6 +81,19 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse((self.stage / 'late.txt').exists())
         self.assertEqual(self.store.goal(self.goal['id'])['invocations'][0]['status'], 'cancelled')
 
+
+    def test_assistant_text_and_stop_diagnostic_are_separate(self):
+        outcome = self.run_fixture(TextWithDiagnosticResponse(lambda: None))
+        self.assertEqual(outcome['status'], 'interrupted')
+        self.assertEqual(outcome['result'], 'partial assistant text')
+        self.assertEqual(outcome['stop_reason'], 'round_limit')
+        self.assertEqual(
+            outcome['diagnostic']['message'],
+            'pi agent round budget exhausted before completion',
+        )
+        saved = self.store.goal(self.goal['id'])
+        self.assertEqual(saved['invocations'][0]['result'], 'partial assistant text')
+        self.assertEqual(saved['runs'][0]['assistant_text'], 'partial assistant text')
     def test_busy_worker_rejects_second_goal_without_corrupting_first(self):
         other = self.store.create_goal('Must not replace an active worker')
         def attempt_second_run():

@@ -140,6 +140,38 @@ class CLISubprocessTests(unittest.TestCase):
             self.assertEqual([], changed["acceptances"])
             self.assertEqual(completed["artifacts"], changed["artifacts"])
 
+    def test_chat_budget_and_continue_reuse_request_without_provider_call(self) -> None:
+        from goal_native import cli
+        from goal_native.store import Store
+
+        with tempfile.TemporaryDirectory(prefix="goal-native-chat-controls-") as temporary:
+            state = Path(temporary) / "state"
+            with Store(state) as store:
+                goal = store.create_goal("Keep the exact latest request")
+            calls = []
+
+            def fake_run(_state, goal_id, args, on_event=None):
+                calls.append((goal_id, args.context_budget, args.max_rounds, args.max_time))
+                return {"status": "finished", "run_started": True, "result": "fixture"}
+
+            parser = cli.build_parser()
+            args = parser.parse_args([
+                "--state", str(state), "--provider", "openai", "--model", "fixture-model", "chat",
+            ])
+            output = io.StringIO()
+            with (
+                patch("builtins.input", side_effect=[
+                    f"/resume {goal['id']}", "/budget 32768", "/continue --max-rounds 2", "/exit",
+                ]),
+                patch.object(cli, "_run_existing", side_effect=fake_run),
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(0, cli._chat(args))
+            self.assertEqual([(goal["id"], 32768, 2, 300.0)], calls)
+            with Store(state) as store:
+                saved = store.goal(goal["id"])
+                self.assertEqual(["Keep the exact latest request"], [item["text"] for item in saved["requests"]])
+
     def test_durable_lifecycle_mock_effect_export_import_and_stale_input(self) -> None:
         with tempfile.TemporaryDirectory(prefix="goal-native-cli-") as temporary:
             state = Path(temporary) / "state"

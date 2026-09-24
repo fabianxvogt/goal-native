@@ -401,6 +401,7 @@ class Worker:
         self._assignment_id: str | None = None
         self._last_assignment_id: str | None = None
         self._run_id: str | None = None
+        self._run_attempt_id: str | None = None
         self._run_fence: dict[str, Any] | None = None
         self._invocation_id: str | None = None
         self._last_invocation_id: str | None = None
@@ -410,6 +411,7 @@ class Worker:
         self._run_gate = threading.Lock()
         self._started_at = 0.0
         self._provider_usage: dict[str, dict[str, Any]] = {}
+        self._admission: dict[str, Any] | None = None
 
     @property
     def last_assignment_id(self) -> str | None:
@@ -439,9 +441,10 @@ class Worker:
         started = time.monotonic()
         self._started_at = started
         self._provider_usage = {}
-        run_id = f"run-{time.time_ns()}"
+        self._admission = None
         self._goal_id = goal_id
-        self._run_id = run_id
+        self._run_id = None
+        self._run_attempt_id = None
         self._assignment_id = None
         self._last_assignment_id = None
         self._run_fence = None
@@ -454,6 +457,18 @@ class Worker:
             assignment = self.store.assign(goal_id)
             assignment_id = self._id(assignment, "assignment")
             self._last_assignment_id = assignment_id
+            limits = {
+                "model": self.model,
+                "provider": self.provider,
+                "context_budget": self.context_budget.max_context_tokens,
+                "output_reserve": self.context_budget.max_output_tokens,
+                "max_rounds": self.max_rounds,
+                "max_time": self.max_total_seconds,
+            }
+            attempt = self.store.start_run(goal_id, assignment_id, limits)
+            run_id = self._id(attempt, "run")
+            self._run_id = run_id
+            self._run_attempt_id = run_id
             goal = self.store.goal(goal_id)
             self._assignment_id = assignment_id
             self._run_fence = {
@@ -462,6 +477,7 @@ class Worker:
                 if key in goal
             }
             compiled = self._compile(goal)
+            self._set_admission(asdict(compiled.usage))
             self._check_cancelled(started)
             remaining_seconds = self.max_total_seconds - (time.monotonic() - started)
             if remaining_seconds <= 0:
@@ -495,43 +511,44 @@ class Worker:
             text = result.get("result", "")
             if not isinstance(text, str):
                 raise BridgeError("pi bridge result text is not a string")
-            if not text and isinstance(result.get("error"), str):
-                text = result["error"]
+            diagnostic = self._diagnostic(result.get("error"), "provider") if result.get("error") else {}
+            stop_reason = result.get("stop_reason") or self._default_stop_reason(status)
             invocation_id = self._last_invocation_id
             if invocation_id is not None and invocation_id not in self._finished_invocations:
                 self._finish_current(status, text)
-            return {
-                "status": status,
-                "goal_id": goal_id,
-                "invocation_id": invocation_id,
-                "rounds": result.get("rounds", 0),
-                "result": text,
-            }
-        except (ContextBudgetError, TimeoutError) as exc:
+            return self._complete_run(
+                goal_id, status, text, stop_reason, diagnostic,
+                result.get("rounds", 0), invocation_id,
+            )
+        except ContextBudgetError as exc:
             status = "cancelled" if self._cancel_event.is_set() else "interrupted"
-            result = f"context/worker budget interrupted: {exc}"
-            invocation_id = self._last_invocation_id
-            if invocation_id is not None:
-                self._finish_current(status, result)
-            return self._outcome(goal_id, invocation_id, status, result)
+            admission = asdict(exc.usage) if exc.usage is not None else self._admission
+            if admission is not None:
+                self._set_admission(admission)
+            return self._stop_run(goal_id, status, "context_budget", str(exc))
+        except TimeoutError as exc:
+            status = "cancelled" if self._cancel_event.is_set() else "interrupted"
+            return self._stop_run(goal_id, status, "time_limit", str(exc))
         except BridgeRPCError as exc:
             status = "cancelled" if self._cancel_event.is_set() else exc.status
-            invocation_id = self._last_invocation_id
-            if invocation_id is not None:
-                self._finish_current(status, str(exc))
-            return self._outcome(goal_id, invocation_id, status, str(exc))
+            if status not in {"failed", "cancelled", "interrupted", "finished"}:
+                status = "failed"
+            reason = "context_budget" if "context budget" in str(exc).casefold() else "provider_error"
+            return self._stop_run(goal_id, status, reason, str(exc))
+        except KeyboardInterrupt:
+            self._stop_run(goal_id, "cancelled", "ctrl_c", "CLI interrupted by Ctrl-C")
+            raise
         except (BridgeError, SandboxError, PermissionError, ValueError, KeyError, OSError) as exc:
             status = "cancelled" if self._cancel_event.is_set() else "failed"
-            invocation_id = self._last_invocation_id
-            if invocation_id is not None:
-                self._finish_current(status, str(exc))
-            return self._outcome(goal_id, invocation_id, status, str(exc))
+            reason = "assignment_fence" if isinstance(exc, PermissionError) else "worker_error"
+            return self._stop_run(goal_id, status, reason, str(exc))
         finally:
             with self._lock:
                 self._active_bridge = None
             self._goal_id = None
             self._assignment_id = None
             self._run_id = None
+            self._run_attempt_id = None
             self._run_fence = None
             self._invocation_id = None
             self._last_invocation_id = None
@@ -544,6 +561,75 @@ class Worker:
             artifacts=goal.get("artifacts", []),
             budget=self.context_budget,
             tools=TOOL_SCHEMAS,
+        )
+
+    def _set_admission(self, admission: dict[str, Any]) -> None:
+        self._admission = dict(admission)
+        if self._run_attempt_id is not None:
+            self.store.record_run_admission(self._run_attempt_id, self._admission)
+
+    @staticmethod
+    def _diagnostic(message: Any, kind: str) -> dict[str, Any]:
+        return {"kind": kind, "message": str(message)}
+
+    @staticmethod
+    def _default_stop_reason(status: str) -> str:
+        return {
+            "finished": "completed",
+            "cancelled": "cancelled",
+            "interrupted": "interrupted",
+            "failed": "provider_error",
+        }.get(status, "worker_error")
+
+    def _complete_run(
+        self,
+        goal_id: str,
+        status: str,
+        assistant_text: str,
+        stop_reason: str,
+        diagnostic: dict[str, Any],
+        rounds: Any,
+        invocation_id: str | None,
+    ) -> dict[str, Any]:
+        run_id = self._run_attempt_id
+        if run_id is not None:
+            self.store.finish_run(
+                run_id,
+                status,
+                stop_reason=stop_reason,
+                diagnostic=diagnostic,
+                assistant_text=assistant_text,
+                admission=self._admission,
+                invocation_id=invocation_id,
+            )
+        return {
+            "status": status,
+            "goal_id": goal_id,
+            "run_id": run_id,
+            "invocation_id": invocation_id,
+            "rounds": rounds,
+            "result": assistant_text,
+            "assistant_text": assistant_text,
+            "stop_reason": stop_reason,
+            "diagnostic": diagnostic,
+            "admission": self._admission,
+        }
+
+    def _stop_run(self, goal_id: str, status: str, stop_reason: str, message: str) -> dict[str, Any]:
+        invocation_id = self._last_invocation_id
+        assistant_text = ""
+        if isinstance(self._invocation, Mapping) and isinstance(self._invocation.get("result"), str):
+            assistant_text = self._invocation["result"]
+        if invocation_id is not None and invocation_id not in self._finished_invocations:
+            self._finish_current(status, assistant_text)
+        return self._complete_run(
+            goal_id,
+            status,
+            assistant_text,
+            stop_reason,
+            self._diagnostic(message, stop_reason),
+            0,
+            invocation_id,
         )
 
     def _rpc(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -587,6 +673,7 @@ class Worker:
         if not isinstance(messages, list) or not isinstance(tools, list):
             raise ValueError("provider request context messages/tools must be lists")
         usage = self.context_budget.admit(messages, tools)
+        self._set_admission(asdict(usage))
         model_info = payload.get("model")
         if isinstance(model_info, Mapping):
             context_window = model_info.get("contextWindow")
@@ -620,6 +707,8 @@ class Worker:
                 snapshot[key] = goal.get(key)
         self._invocation_id = invocation_id
         self._last_invocation_id = invocation_id
+        if self._run_attempt_id is not None:
+            self.store.bind_run_invocation(self._run_attempt_id, invocation_id)
         self._invocation = snapshot
         pending, self._pending_events = self._pending_events, []
         for event in pending:
@@ -887,15 +976,6 @@ class Worker:
             return value["id"]
         raise KeyError(f"{kind} did not return an id")
 
-    @staticmethod
-    def _outcome(goal_id: str, invocation_id: str | None, status: str, result: str) -> dict[str, Any]:
-        return {
-            "status": status,
-            "goal_id": goal_id,
-            "invocation_id": invocation_id,
-            "rounds": 0,
-            "result": result,
-        }
 
 
 __all__ = ["PiBridge", "TOOL_SCHEMAS", "Worker"]
