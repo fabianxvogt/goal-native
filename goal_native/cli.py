@@ -531,29 +531,41 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     upstream = project_root / "upstream" / "pi"
-    agent_package = upstream / "packages" / "agent" / "package.json"
-    ai_package = upstream / "packages" / "ai" / "package.json"
-    auth_package = upstream / "packages" / "coding-agent" / "package.json"
+    package_names = ("chord", "telemetry", "agent", "ai", "coding-agent")
     dist_files = [
+        upstream / "packages" / "chord" / "dist" / "index.js",
+        upstream / "packages" / "telemetry" / "dist" / "index.js",
         upstream / "packages" / "agent" / "dist" / "index.js",
         upstream / "packages" / "ai" / "dist" / "index.js",
         upstream / "packages" / "coding-agent" / "dist" / "core" / "auth-storage.js",
     ]
     versions: dict[str, str | None] = {}
-    for name, package_path in (("agent", agent_package), ("ai", ai_package), ("coding-agent", auth_package)):
+    for name in package_names:
+        package_path = upstream / "packages" / name / "package.json"
         try:
             versions[name] = json.loads(package_path.read_text(encoding="utf-8")).get("version")
         except (OSError, ValueError):
             versions[name] = None
-    expected_versions = {"agent": "0.87.1", "ai": "0.87.1", "coding-agent": "0.87.1"}
+    expected_versions = {name: "0.87.1" for name in package_names}
     pi_cloned = upstream.is_dir() and (upstream / ".git").exists()
     pi_built = all(path.is_file() for path in dist_files)
     bridge_ok = (project_root / "bridge" / "agent.mjs").is_file()
-    pi_ok = pi_cloned and pi_built and versions == expected_versions and bridge_ok
+    pi_importable = False
+    if node_ok and pi_built and bridge_ok:
+        try:
+            probe = subprocess.run(
+                [node_path, "--input-type=module", "-e", "await import('./bridge/agent.mjs')"],
+                cwd=project_root, capture_output=True, text=True, timeout=10, check=False,
+            )
+            pi_importable = probe.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            pass
+    pi_ok = pi_cloned and pi_importable and versions == expected_versions
     checks["pi"] = {
         "ok": pi_ok,
         "cloned": pi_cloned,
         "built": pi_built,
+        "importable": pi_importable,
         "versions": versions,
         "expected_version": "0.87.1",
         "bridge": bridge_ok,
