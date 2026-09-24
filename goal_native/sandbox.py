@@ -65,6 +65,15 @@ _MAX_PATH_CHARS = 4096
 _MAX_RUN_ARGS = 64
 _MAX_RUN_ARGUMENT_CHARS = 4096
 _MAX_RUN_ARGUMENT_BYTES = 16 * 1024
+_PYTHON_RUNNER = """
+import os, sys
+descriptor_path, __file__ = sys.argv[1:3]
+sys.argv = sys.argv[2:]
+sys.path[:0] = list(dict.fromkeys([os.path.dirname(__file__), os.getcwd()]))
+with open(descriptor_path, "rb") as source:
+    code = compile(source.read(), __file__, "exec")
+exec(code, globals())
+"""
 
 
 class Sandbox:
@@ -447,7 +456,12 @@ class Sandbox:
                 "-p",
                 self._profile(fd_path),
                 self.interpreter,
+                "-I",
+                "-B",
+                "-c",
+                _PYTHON_RUNNER,
                 fd_path,
+                str(self.root.joinpath(*parts)),
                 *args,
             ]
             environment = {

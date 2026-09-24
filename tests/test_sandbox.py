@@ -19,6 +19,34 @@ MACOS = sys.platform == "darwin"
 
 @unittest.skipUnless(MACOS, "macOS enforcement is required for sandbox tests")
 class SandboxTests(unittest.TestCase):
+    def test_multifile_execution_imports_only_selected_project_and_preserves_script_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "stage"
+            root.mkdir()
+            tools = root / "tools"
+            tools.mkdir()
+            (root / "totals.py").write_text("VALUE = 30\n", encoding="utf-8")
+            (tools / "helper.py").write_text("EXTRA = 12\n", encoding="utf-8")
+            (tools / "data.txt").write_text("staged data", encoding="utf-8")
+            (tools / "check.py").write_text(
+                "from pathlib import Path\n"
+                "from totals import VALUE\n"
+                "from helper import EXTRA\n"
+                "import sys\n"
+                "print(VALUE + EXTRA)\n"
+                "print(Path(__file__).with_name('data.txt').read_text())\n"
+                "print(sys.argv[1])\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"PYTHONPATH": "/unselected/host/path"}):
+                sandbox = Sandbox(root)
+                try:
+                    result = sandbox.run({"path": "tools/check.py", "args": ["argument"]})
+                finally:
+                    sandbox.close()
+            self.assertEqual(0, result["exit_code"], result["stderr"])
+            self.assertEqual("42\nstaged data\nargument\n", result["stdout"])
+
     def test_execution_uses_fixed_enforcer_and_trusted_interpreter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "stage"
