@@ -15,6 +15,8 @@ All returned objects JSON-compatible dictionaries/lists. IDs strings, timestamps
 - `finish(invocation_id, status, result='')`: status finished/failed/cancelled/interrupted; no acceptance implied.
 - `local_stage(goal_id) -> str | None`: controller-only local run-directory basename, not a host path or portable artifact.
 - `remember_local_stage(assignment_id, stage_name) -> bool`: record stopped work after task cleanup; locate the last durable invocation for the exact assignment even if admission was interrupted before an event/result. Reject running invocations/path-valued names; return false for fenced assignments or no invocation. Local metadata stays out of exports and imports, including injected import fields.
+- `remember_workspace_baseline(goal_id, stage_name, files, selection)`: controller-only immutable input snapshot binding. Content-addressed snapshot rows are shared across continued stages; the binding cannot be replaced with different bytes/selection.
+- `workspace_baseline(goal_id, stage_name) -> dict | None`: local selected bytes and exclusion/source metadata. Neither these tables nor host source paths are accepted from imports.
 - `verify(invocation_id, artifact_id, check, passed, details, trusted=False) -> evidence`: bound immutable candidate; trusted only callable by controller/human, NEVER worker dispatch.
 - `prepare_effect(invocation_id, artifact_id, target, expected_version, evidence_id) -> effect`: mock record replacement, target string, uses exact candidate content. Require trusted passing current-candidate evidence; policy validates again at commitment. State prepared, id immutable.
 - `approve(effect_id) -> effect`: human exact-proposal approval; MUST revalidate original invocation freshness, authority, evidence/candidate/destination before approval. No input increment for unchanged approval.
@@ -96,6 +98,32 @@ the existing ContextBudget whole-request ceiling including reserves. Admission
 remains conservative UTF-8-byte based, with Worker model-window checks. Raising
 the ceiling is explicit user permission for larger input, not an output cap,
 automatic retry or permission to omit binding context.
+
+# Reviewed code delivery
+
+`source-preview PATH` returns the selected relative filenames, counts and exclusion
+reasons without a Store mutation or provider call. Git evaluates local nested
+`.gitignore` files in an isolated temporary Git directory, without source/global
+repository configuration. Credential/controller names, symlinks and common
+dependency/generated paths remain excluded. Name rules are not a secret scanner.
+
+`files GOAL`, `changes GOAL`, and `diff GOAL` inspect the recorded local stage.
+`diff` returns a full SHA-256 `review_id` bound to the selected baseline, candidate
+content/modes, stage, current contract and observed original-source state.
+Reviewing does not accept work or permit host writes.
+
+`export-code GOAL --review ID --output PATH [--format patch|files]` rechecks that
+identity and writes a new file outside the selected project and controller state.
+It never overwrites an existing destination. Text patches include additions,
+modifications, deletions and executable modes; binary changes reject patch export
+rather than producing a partial patch. `files` exports a ZIP containing the
+complete selected candidate and a relative-path/hash/deletion manifest.
+Excluded source files cannot be interpreted as candidate deletions.
+
+Chat exposes `/files`, `/changes`, `/diff`, and `/export PATH [--format files]`.
+It retains the last displayed review ID only in the terminal process; a new
+process must review again. Portable workspace export/import remains separate.
+No host apply command or production effect adapter is introduced.
 
 # HTTP integration
 

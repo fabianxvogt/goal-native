@@ -72,6 +72,20 @@ symlinked recovery paths fail visibly; `--fresh` is an explicit empty-file choic
 Same-user host tampering and abrupt-death task lifetime remain outside the
 claimed recovery guarantee.
 
+Code delivery uses content-addressed input snapshots and per-stage bindings in
+the same Store. Local source selection/provenance is not portable authority.
+Continued stages inherit their original baseline; explicit source/artifact/fresh
+selection starts a new baseline. Diff review binds content hashes, modes,
+contract and observed source state. Export serializes those exact bytes to a
+new external file, never applies them to the selected checkout, and excludes
+controller/provider records from the code bundle.
+
+Multi-file Python execution still uses the fixed interpreter under the same
+macOS profile. Isolated mode removes ambient Python import configuration.
+A small in-process launcher reads the pinned entry descriptor and supplies its
+staged filename, script directory and project root so imports, arguments and
+`__file__`-relative data work without a host shell or another process.
+
 ## Baseline and limits
 
 The full pi coding-agent is a natural operational baseline, retaining its normal memory/session behavior. Sharing pi internals improves comparison fidelity but does not itself prove fairness or superiority. Match capabilities, safety and model settings; disclose differences. Hook documentation is not executed proof; verification records must state what was actually exercised, especially live cancellation, accounting and isolation.

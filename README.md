@@ -132,6 +132,47 @@ model-window checks, round/time limits and mandatory-context admission remain.
 The live continuation check needed **32768** after exhausting the default.
 No silent truncation, automatic retry or Codex output-token cap is introduced.
 
+### Review and export code
+
+Select a project explicitly; inspect the selection without a model call:
+
+```sh
+python3 -m goal_native source-preview /path/to/project
+python3 -m goal_native --source-dir /path/to/project --context-budget 32768
+```
+
+Source selection honors nested `.gitignore` rules using Git, excludes common
+dependency/build directories and credential/controller names, and lists every
+omission. It is not a secret scanner. `/files` shows selected files and exclusions;
+`/changes` lists changes against the immutable initial selected snapshot.
+Ignored inputs never become proposed deletions.
+
+In a session, use `/diff`, then `/export /path/outside/project/change.patch`.
+The export must still match the reviewed bytes, goal contract and observed source
+state. New edits require another `/diff`. The destination must not already exist
+and must be outside the selected source and controller state. No command applies
+changes to your project.
+
+For scripts and automation:
+
+```sh
+python3 -m goal_native diff GOAL_ID
+python3 -m goal_native export-code GOAL_ID --review REVIEW_ID --output /tmp/change.patch
+git -C /path/to/matching-checkout apply --check /tmp/change.patch
+```
+
+`REVIEW_ID` comes from `diff`. Source divergence is reported, not silently
+overwritten; an export still targets its recorded baseline. Review and apply
+the patch yourself, then run the project's checks. Export is not acceptance.
+Binary changes require `--format files` (also supported by `/export`): a ZIP
+with the complete selected candidate under `files/` and a hash/deletion manifest.
+It contains no session/provider traces or host recovery paths.
+
+The existing `export` command remains a separate workspace-history archive.
+Local baselines and stage recovery references are not imported from it.
+Pre-feature stages need one continuation to establish a new baseline; that
+checkpoint cannot reconstruct earlier edits.
+
 The optional browser interface still exposes the older goal-centered controls; it has not received the session-first redesign:
 
 ```sh
@@ -169,6 +210,10 @@ Arbitrary code runs only through the restricted execution adapter. Unsupported o
 
 The currently exercised execution target is **macOS, staged Python only**:
 no shell, subprocesses, forks or network. Each run owns a separate stage.
+Sibling/package imports and paths relative to `__file__` work inside the selected
+project. The isolated interpreter reads the entry script through its pinned file
+descriptor, with only its staged script directory and project root added to
+module search; it does not inherit the controller's `PYTHONPATH`.
 This is not a VM: stage admission limits are not runtime disk/memory quotas,
 and the controller, interpreter installation and host user remain trusted.
 See the [sandbox review](docs/REVIEW-SANDBOX.md) for the exact boundary.
