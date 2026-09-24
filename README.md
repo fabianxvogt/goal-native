@@ -4,20 +4,33 @@
 
 A session-first, local AI CLI. Open it and type a request; durable goals, changing requirements and reusable work are handled underneath. An interrupted task can leave useful work behind without silently granting an old agent permission to act.
 
-**Status: streamed terminal replies, compact tool progress, and automatic local-file reopening; live Luna coding continuation exercised.** No manual goal creation is needed. This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) records the new workflow and earlier failures/repairs. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocol](docs/EVALUATION.md) govern broader claims.
+**Status: budget-stop recovery, reviewed patch/file export, and a source bootstrap with `./goal`.** No manual goal creation is needed. This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) separates actual coding journeys from synthetic protocol fixtures and records failures/repairs. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocol](docs/EVALUATION.md) govern broader claims.
 
 ## Run locally
 
-Python 3.11+ and Node.js 22.19+. The controller uses Python's standard library; agent execution builds and reuses the pinned pi source checkout. Clone with `--recurse-submodules`, then:
+Python 3.11+, Git and Node.js 22.19+ with npm. The exercised code-execution
+platform is macOS. Clone this repository, then:
 
 ```sh
-git submodule update --init --recursive
-npm run bootstrap:upstream
-python3 -m goal_native login
-python3 -m goal_native
+python3 scripts/bootstrap.py
+./goal doctor --model gpt-6-luna
+./goal login
+./goal
 ```
-If the system Python is older, use the project environment (for example
-`.venv/bin/python`) or `uv run --no-project --python 3.12 python -m goal_native`.
+
+Bootstrap initializes and checks the exact pinned pi revision, builds its runtime,
+creates `.venv`, and installs the Python entry point. It downloads npm dependencies
+and upstream model-catalog metadata, but performs no login or model call. It refuses
+to reset a dirty/unpinned pi checkout or replace an
+incomplete existing environment. Follow its remediation instead of deleting
+user work. An older system Python needs an explicitly installed Python 3.11+
+(for example `python3.12 scripts/bootstrap.py`).
+
+`doctor` separates runtime prerequisites from credentials and reports missing
+steps without printing tokens or calling a model. Before login, credential
+readiness is expected to be false. Pi refreshes expired OAuth access tokens on
+the next explicit run. `./goal` works from any caller directory using the
+checkout's environment; relative `--state` and source paths remain caller-relative.
 
 ### Just start a session
 
@@ -36,7 +49,11 @@ New session. Just type a request; goals are saved automatically.
 
 - `/new`: start fresh on the next request; it does not create empty records.
 - `/sessions`, then `/resume 1`: reopen saved work without running it yet.
-- `/status`: inspect the backing goal, last recorded run and current local stage.
+- `/status`: inspect goal state, last stop reason, recorded rounds and context headroom.
+- `/budget [N]`: inspect or explicitly set the session's context ceiling; no model call.
+- `/continue [--context-budget N --max-rounds N --max-time SECONDS]`: rerun the
+  latest request from retained files, without inventing another request. Overrides
+  apply to that run; `/budget` changes subsequent runs in the current CLI process.
 - `/help`, `/exit`: commands and exit. Ctrl-C stops an active run and returns
   to the prompt; at the prompt it clears input. End a line with `\` for multiline input.
 
@@ -48,16 +65,17 @@ or after `chat`. Source-checkout installations expose the same entry point as
 No background planning agent, daemon or extra goal-generation model call:
 one session maps to one existing durable goal. Runs stay draft-only; sending
 another request also revokes any prior effect grant. Opening a session does not
-run, approve or resume paused work until you send a request.
+run, approve or resume paused work until you send a request or explicitly `/continue`.
 
 Assistant replies stream as they arrive. One compact terminal line shows current
 tool activity; thinking blocks, raw tool results and traces stay out of the
 default view. A completed response is not printed twice.
 
 Files carry forward into a **fresh isolated stage**, including after restarting
-the CLI. `/resume` selects the session; sending a request restores its recorded
-local files and continues. Recovery metadata stays in this workspace's Store,
-outside portable exports. Imported receipts never select host directories.
+the CLI. `/resume` selects the session; a request or `/continue` restores its recorded
+local files. Context-budget rejection before the first provider invocation also
+retains a stopped run and recovery reference. Recovery metadata stays in this
+workspace's Store, outside portable exports. Imported records never select host directories.
 
 Use `--source-dir` or an artifact option to override the initial files, or
 `--fresh` to start with empty files while keeping saved requests/artifacts.
@@ -112,12 +130,14 @@ Override that selection with an artifact ID from the summary or `--source-dir`;
 never shares the old writable directory. Durable artifacts and current requests
 also feed the context compiler.
 
-The summary separates `goal_status`, individual invocations, and `recorded_runs`.
-A finished invocation is one completed provider turn, not necessarily a
-successful whole run or accepted goal. New CLI run receipts retain the returned
-status, diagnostic, stage location and selected budgets. Older runs, Ctrl-C,
-abrupt termination and failures before the first invocation may have no run receipt;
-missing records are not inferred successes.
+The summary separates `goal_status`, individual invocations, durable
+`run_attempts`/`latest_run`, and older `recorded_runs` receipts. A finished
+invocation is one provider turn, not necessarily a successful whole run or
+accepted goal. Run attempts start before context compilation and preserve
+assistant text separately from `stop_reason` and `diagnostic`, including a
+zero-invocation budget stop. Last admission estimates and selected limits survive
+reopening and workspace export; unknown round counts remain unknown.
+Abrupt termination may leave an unfinished record, never an inferred success.
 
 `matches_current_contract` compares revision/input/authority versions only,
 not assignment liveness or acceptance. Historical artifacts retain their trust,
@@ -129,8 +149,10 @@ artifacts and artifact bodies, but tool receipts can contain source/output:
 unchanged. It is a conservative UTF-8-byte token ceiling including reserves,
 not actual billed tokens. Explicitly raising it permits a larger request;
 model-window checks, round/time limits and mandatory-context admission remain.
-The live continuation check needed **32768** after exhausting the default.
-No silent truncation, automatic retry or Codex output-token cap is introduced.
+Use `/budget` or `/continue --context-budget N` after inspecting the stop;
+no automatic budget expansion, retry, constraint truncation or Codex output cap
+is introduced. Reopening the CLI uses its selected/default limits, not a silent
+restoration of a previous higher ceiling.
 
 ### Review and export code
 
@@ -234,6 +256,9 @@ The first effect adapter is a **local mock application**, not a production publi
 ## Persistence and privacy
 
 Each state directory is an independent workspace containing SQLite records and content-addressed artifacts. Use JSON export to retain a portable copy; imports require an empty workspace and cannot revive executable authority. Exports contain task content and traces, so review them before sharing. No production credentials, personal workspaces or private datasets ship with the repository.
+Workspace export format 2 includes run attempts without local stage references;
+imports also accept format 1 archives. Local file snapshots require a separate
+reviewed code export.
 
 The worker's ordinary artifacts and optional findings provide continuation. The controller never invents a root cause, limitation or next plan that no producer expressed. Search results retain their declared scope; a negative match does not certify the absence of all callers.
 

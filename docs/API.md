@@ -3,7 +3,7 @@
 All returned objects JSON-compatible dictionaries/lists. IDs strings, timestamps UTC. `Store(root)` creates a state directory and SQLite database containing content-addressed immutable artifacts. Store owns one workspace. Methods below are the integration contract; optional extra fields are permitted. All IDs checked for workspace ownership (one DB). Store is a trusted controller API, never exposed as an arbitrary model/plugin object; untrusted task code runs outside the controller's OS boundary.
 
 - `create_goal(outcome, parent_id=None, kind='outcome', criteria='', constraints='') -> goal` with id, outcome, revision, input_version, authority_version, status, kind, parent_id. Preserve original request.
-- `list_goals() -> list[goal]`; `goal(goal_id) -> goal` enriched with requests, artifacts, invocations, effects, events, acceptances.
+- `list_goals() -> list[goal]`; `goal(goal_id) -> goal` enriched with requests, artifacts, invocations, runs, effects, events, acceptances.
 - `request(goal_id, text, control=None) -> goal`: immediately increments input_version; control one of pause/cancel/draft/resume or None. Never model-authorized. Default draft-only authority; explicit user `control='allow_effects'` grants mock destination only.
 - `revise(goal_id, expected_revision, outcome, criteria, constraints) -> goal`: trusted human operation; CAS revision; request/input fence included.
 - `assign(goal_id) -> assignment`: fences predecessor assignment, fields id, goal_id, authority_version. Refuse paused/cancelled.
@@ -13,8 +13,14 @@ All returned objects JSON-compatible dictionaries/lists. IDs strings, timestamps
 - `receipt(invocation_id, tool, parameters, result, note='') -> receipt`: preserves full result, producer and exact parameters, note explicitly worker assertion.
 - `usage(invocation_id, usage_dict)`: record provider raw and normalized usage without reasoning/cache double count; unknown remains null, not zero.
 - `finish(invocation_id, status, result='')`: status finished/failed/cancelled/interrupted; no acceptance implied.
+- `start_run(goal_id, assignment_id, limits) -> run`: durable attempt before context compilation, bound to an active assignment; no invocation required.
+- `record_run_admission(run_id, admission)` / `bind_run_invocation(run_id, invocation_id)`: retain controller admission estimates and the exact assignment's invocation.
+- `finish_run(run_id, status, *, stop_reason=None, diagnostic=None, assistant_text='', admission=None, invocation_id=None, rounds=None) -> run`: persist the whole-run outcome independently of assistant text; unknown rounds remain null.
+- `run_attempts(goal_id) -> list[run]`: ordered durable run history.
+- `reopen_for_run(goal_id) -> goal`: trusted explicit draft-only continuation, without appending request text; cancelled goals cannot reopen.
+- `pause_for_interruption(goal_id, reason='run interrupted') -> goal`: durable pause/authority fence without manufacturing a user request.
 - `local_stage(goal_id) -> str | None`: controller-only local run-directory basename, not a host path or portable artifact.
-- `remember_local_stage(assignment_id, stage_name) -> bool`: record stopped work after task cleanup; locate the last durable invocation for the exact assignment even if admission was interrupted before an event/result. Reject running invocations/path-valued names; return false for fenced assignments or no invocation. Local metadata stays out of exports and imports, including injected import fields.
+- `remember_local_stage(assignment_id, stage_name) -> bool`: record stopped work after cleanup, including an attempt with zero invocations. Reject running attempts/invocations and path-valued names; return false for replaced assignments or no stopped work. One assignment-bound recovery table replaces the old invocation-only schema atomically. Local recovery metadata stays out of exports/imports.
 - `remember_workspace_baseline(goal_id, stage_name, files, selection)`: controller-only immutable input snapshot binding. Content-addressed snapshot rows are shared across continued stages; the binding cannot be replaced with different bytes/selection.
 - `workspace_baseline(goal_id, stage_name) -> dict | None`: local selected bytes and exclusion/source metadata. Neither these tables nor host source paths are accepted from imports.
 - `verify(invocation_id, artifact_id, check, passed, details, trusted=False) -> evidence`: bound immutable candidate; trusted only callable by controller/human, NEVER worker dispatch.
@@ -23,7 +29,7 @@ All returned objects JSON-compatible dictionaries/lists. IDs strings, timestamps
 - `commit(effect_id, lose_response=False) -> effect`: transaction checks all fences and destination CAS, writes local mock application and operation identity atomically. With loss, effect state unresolved but destination operation exists; `reconcile(effect_id)` queries identity and confirms without retry. Repeated commit deduplicated.
 - `effects(goal_id) -> list[effect]`; `destination(target) -> {target,version,content,operation_id}` (new version=0).
 - `accept(goal_id, artifact_id, evidence_id, expected_revision) -> acceptance`: trusted human, exact candidate, current revision and adequate trusted evidence. Never autoaccept from worker finish.
-- `export() -> dict`: versioned consistent-snapshot workspace export, all durable records and artifact content. Import via `Store.import_data(root, data)` into EMPTY state only; preserve validated provenance, format and hashes. Imported delivery records are explicitly unverified historical claims, never confirmed local effects, and cannot revive effect permission. Exports contain task content and must be reviewed before sharing.
+- `export() -> dict`: format 2 consistent-snapshot workspace export of durable records and artifact content, including run attempts but excluding local recovery/baseline tables and run stage names. `Store.import_data(root, data)` accepts formats 1/2 into EMPTY state only; preserves validated provenance/hashes, fences authority and marks imported unfinished runs interrupted. Imported delivery records remain unverified historical claims, never confirmed local effects. Task content/traces require review before sharing.
 
 # Worker integration
 
@@ -35,8 +41,8 @@ trusted controller callback, not a worker tool. The terminal renders text
 blocks/deltas and fixed tool labels, not thinking blocks or raw tool bodies.
 JSON execution commands attach no terminal display.
 Read-only `last_assignment_id` survives run cleanup for local recovery, including
-interruption immediately after durable invocation admission. It resets when
-the next run starts and does not authorize tools or effects.
+rejection before the first provider invocation. It resets when the next run
+starts and does not authorize tools or effects.
 
 Supported tools: staged read/write/search/run, save_artifact and optional finding. No approve/verify trusted/commit/authority tools. Worker may prepare candidate, not authorize it. Tool results untrusted data. Staged files ONLY; reject symlinks, path escape and credential/controller paths. Arbitrary code must execute in verified OS sandbox or fail closed. Context compilation includes faithful request/constraints and known qualifications, hard admission including schema/history/output reserve, no silent required truncation. No provider credentials in task-tool environment. Persist actual model exchange for auditable capture cost. Pi integration must execute the real provider; fake transports are correctness-test fixtures only. No default pi host shell, ambient extension discovery or automatic compaction/model maintenance calls.
 
@@ -45,8 +51,10 @@ Bare CLI invocation and `chat` open a terminal session, defaulting to Codex
 explicit models. The first submitted request calls `create_goal`; subsequent
 requests call `request(..., control="draft")`, then the existing Worker path.
 `/new` allocates nothing; `/resume` selects existing work without executing or
-changing authority. Cancelled goals cannot reopen. Sending a new request can
-resume paused work, but cannot grant effects.
+changing authority. Cancelled goals cannot reopen. A new request or explicit
+`/continue` can resume paused work, but cannot grant effects. `/continue` does
+not append request text. `/budget [N]` only inspects/changes the process-local
+ceiling; optional `/continue` context/round/time overrides apply to that run.
 
 CLI runs automatically recover a `local_stages` reference in the same Store,
 derive its path under the current workspace, reject symlinked/missing recovery
@@ -54,10 +62,10 @@ directories, and copy through existing admission into a new isolated stage.
 No persisted/imported receipt path selects files. Explicit source/artifact
 options override recovery; `--fresh` opts into empty files without removing
 artifacts. Chat consumes those seed options once per selected session.
-After cleanup, the last invocation's still-active assignment can publish the
-local reference transactionally; a replaced run cannot roll it back. Ctrl-C
-can retain partial work without resuming authority. Abrupt death and
-no-invocation failures do not manufacture a recovery reference.
+After cleanup, the stopped run's still-active assignment can publish the local
+reference transactionally; a replaced run cannot roll it back. Ctrl-C and
+zero-invocation context stops retain partial work without resuming authority.
+Abrupt death before cleanup does not manufacture a recovery reference.
 
 The context compiler retains the complete request stream and supplies the
 latest request as the final user message, with explicit chronological precedence
@@ -78,7 +86,8 @@ full-context/output-budget evaluation without resolving that difference.
 
 CLI `show GOAL_ID --summary` projects the canonical goal snapshot into separate
 goal status, invocations (normalized usage, exact tool receipts and evidence),
-artifact metadata, historical acceptances/effects and `recorded_runs`.
+artifact metadata, historical acceptances/effects, `run_attempts`, `latest_run`,
+and older `recorded_runs` receipts.
 `matches_current_contract` means revision/input/authority equality only; it
 does not certify assignment liveness or acceptance. Provider traces and context
 artifact bodies are omitted; tool results/parameters remain untrusted task
@@ -89,9 +98,10 @@ After a Worker returns with an invocation ID, CLI interactive requests and
 Parameters preserve model/provider/context/round/time selections; the result
 includes local stage path and input manifest. One finished provider invocation
 can precede a failed/interrupted whole run; do not infer run success from it.
-Historical/imported receipts are records, not executable authority. Receipt
-coverage excludes older runs, Ctrl-C, abrupt process termination and no-invocation
-failures. Stage paths survive export as metadata, not portable file contents.
+Historical/imported receipts are records, not executable authority. Durable run
+attempts cover context rejection before any invocation and Ctrl-C; abrupt
+termination can remain unfinished. CLI receipt stage paths are historical metadata,
+not portable file contents or authority for recovery.
 
 Those execution commands accept `--context-budget` (default 16384), passed to
 the existing ContextBudget whole-request ceiling including reserves. Admission

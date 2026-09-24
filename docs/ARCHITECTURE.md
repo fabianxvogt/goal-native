@@ -64,13 +64,20 @@ capture. It renders public text and fixed tool labels, not thinking blocks,
 raw tool output or provider traces. No second provider loop or renderer thread.
 
 Local file recovery uses one non-exported table in the existing Store, not
-portable receipt paths or a second session database. A stopped invocation's
-assignment must still be active to update its goal's run-directory basename.
+portable receipt paths or a second session database. A stopped run's assignment
+must still be active to update its goal's run-directory basename, even with zero invocations.
 Replaced runs cannot overwrite recovery metadata. The CLI derives and checks
 the workspace path, then copies files into a new isolated stage. Missing or
 symlinked recovery paths fail visibly; `--fresh` is an explicit empty-file choice.
 Same-user host tampering and abrupt-death task lifetime remain outside the
 claimed recovery guarantee.
+
+Run attempts are recorded before context compilation, independently of provider
+invocations. Stop reasons/diagnostics do not overwrite assistant text. Context
+admission failures retain the rejected estimate, including failures during the
+pi RPC loop; no string matching or fabricated token usage determines the reason.
+Explicit continuation reopens draft authority without adding a fake user request.
+Portable run history excludes the local recovery reference.
 
 Code delivery uses content-addressed input snapshots and per-stage bindings in
 the same Store. Local source selection/provenance is not portable authority.

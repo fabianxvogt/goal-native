@@ -10,7 +10,98 @@ Darwin 25.5 / arm64; Python 3.12.12; Node 22.23.2. Pi source is the submodule
 at `a7d17e39aaa0091c7573d0790714751956f10bd1`, package version `0.87.1`.
 `npm run build:upstream` passed, including the cloned credential-store build.
 
-## Streaming and local-file reopening checkpoint
+## Budget recovery and reviewed coding delivery
+
+**82 application checks passed** with ResourceWarning treated as an error.
+The five installation checks also passed after the dependency/doctor repair;
+all **4 evaluator safeguards** and `python -m evaluation smoke` passed. These
+are correctness checks, not a comparative model evaluation.
+
+Actual CLI → Node → pi → loopback HTTP, with explicitly synthetic responses:
+
+- A required request estimated at **26,323 / 16,384** stopped before any provider
+  request or invocation. The run reason, rejected estimate and selected files
+  survived. A new CLI process raised the ceiling explicitly to 65,536 and
+  `/continue` read the retained marker and finished in two turns. The durable
+  request count remained one; an invalid `/budget 1` did not poison the ceiling.
+- A later admission stop made exactly one HTTP request, then rejected accumulated
+  context at **42,146 / 16,384**. Assistant progress and the `context_budget`
+  diagnostic both survived. The first probe exposed lost assistant text at this
+  boundary; the repair and a permanent real-transport regression passed.
+- A one-round stop retained nonempty assistant text **and** the separate
+  `round_limit` diagnostic. `/status` reports the last estimate/headroom and
+  known rounds, not billed token usage.
+- Zero-invocation run history survives format-2 export/import without granting
+  local file recovery or effects. Regression checks cover old recovery-schema
+  migration, format-1 import and stale-assignment rejection.
+
+### Live multi-file coding journey
+
+Actual **Codex / gpt-6-luna**, macOS staged Python, explicit **98,304** context
+ceiling. The selected project was a copy of the real context compiler and its
+tests, with an intentionally seeded UTF-8 character-count regression. This is
+not a claim that the production compiler had that defect.
+
+| Step | Observed result |
+| --- | --- |
+| Independent baseline check | Existing Unicode check failed before model execution. |
+| Deliberately bounded first run | Two turns, `interrupted / round_limit`; selected files and baseline retained. |
+| Changed requirement and new CLI process | Added exact-budget equality versus one-less rejection; reopened without source/artifact flags and used `/continue`. |
+| Model completion | Six turns, fresh stage, two durable requests, changed compiler **and** tests. |
+| Actual terminal commands | `/status`, `/files`, `/diff`, `/export`, exit 0. |
+| Independent delivery check | `git apply --check`, apply to a separate original copy, then all **8 project checks passed**. |
+| Additional independent oracle | ASCII and 2-/3-/4-byte Unicode exact-boundary admission checks passed. |
+| File export and stale review | ZIP bytes matched the applied candidate; changing original source invalidated the old review and created no output. |
+
+The original selected files stayed unchanged by the worker/export path.
+The goal remained **draft**, effects disabled, acceptance empty.
+Patch SHA-256: `205b5f5ba0e90f05bf7e8a6e539440dc7aa77d671b6e7ce98bf275ff469e5154`.
+Temporary workspaces, live transcripts and generated candidates are not published.
+
+Source-selection checks cover nested ignores/negation, visible exclusions and
+unsafe files. Real `git apply` regressions cover additions, modifications,
+deletions, executable modes, spaces and missing final newlines. Binary patches
+reject rather than silently omit data; reviewed file ZIPs retain exact bytes.
+An earlier actual multi-file smoke failed importing staged `totals` from a
+descriptor entry point; the fixed isolated bootstrap passed sibling/package
+imports and `__file__`-relative data without enabling a shell or host imports.
+
+Integration checks also caught a missing stage-parent initialization; it was
+repaired before the passing suite. An incidental global `/dev/fd` count test
+was removed rather than re-pinned: unrelated descriptor cleanup changed its
+count from 14 to 11. That count is not a deterministic leak or behavior oracle.
+
+### Source installation
+
+A separate Git checkout, initially without pi dependencies/builds or a virtual
+environment, completed `python scripts/bootstrap.py`. The first attempts exposed
+the wrong upstream hydration script name and missing telemetry/chord build
+prerequisites. The corrected shared build pipeline compiled the dependency
+closure and installed the editable Python package successfully.
+
+From **outside** that checkout, its `goal` launcher:
+
+- opened/exited a fresh prompt with no state or provider call;
+- reported runtime and bridge imports ready while deliberately absent OAuth
+  credentials remained separately missing;
+- reported the runtime unready with bootstrap remediation when a generated
+  dependency directory was temporarily removed, then restored;
+- completed an actual CLI → pi → synthetic HTTP → macOS sandbox run in three
+  turns, including selected-file reading and `FRESH_INSTALL_RUNTIME_OK` output.
+  Relative source/state paths resolved against the caller, not the checkout.
+
+No login or inference was performed by bootstrap/doctor. Bootstrap requires
+network access for dependencies and upstream model metadata; the catalog is
+not a bit-for-bit frozen build input. Unused upstream dev-dependency engine and
+deprecation warnings remained visible on Node 22.23.2. A wheel alone is still
+not a standalone distribution.
+
+Limits: source filters are not a secret scanner; same-user host tampering,
+abrupt-death task lifetime, runtime disk/memory quotas and non-macOS execution
+remain outside the demonstrated boundary. Browser redesign, automatic host
+apply, broader providers and comparative quality/efficiency remain deferred.
+
+## Earlier streaming and local-file reopening checkpoint
 
 **66 application tests passed** under
 `.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -v`.

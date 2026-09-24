@@ -1,11 +1,11 @@
 # Documentation
 
-- [Observed verification](VERIFICATION.md): streaming, stop/continue and automatic file reopening; live Luna coding, earlier failures/repairs, and performance gates.
+- [Observed verification](VERIFICATION.md): budget-stop recovery, live multi-file coding through interruption/restart/reviewed export, source installation, and earlier failures/repairs. Synthetic protocol fixtures are labeled separately.
 - [Acceptance contract](CONTRACT.md): owner proposal mapped to implementation and evidence gates.
 - [Architecture](ARCHITECTURE.md): cloned pi foundation, integration ownership and enforcement hooks.
 - [Runtime API](API.md): controller/worker/UI integration, authority and ownership boundaries.
 - [Evaluation](EVALUATION.md): preregistered lifecycle comparison, independent assessment and honest reporting rules.
-- [Start a session](../README.md#just-start-a-session): automatic goals, follow-ups and reopening. [Advanced inspection](../README.md#inspect-and-continue-work): run outcomes, explicit context budgets and artifact continuation.
+- [Start a session](../README.md#just-start-a-session): automatic goals and explicit budget continuation. [Reviewed code export](../README.md#review-and-export-code): source selection, immutable baselines and patch/file delivery. [Source bootstrap](../README.md#run-locally): prerequisites, `./goal` and doctor.
 - [Roadmap](../ROADMAP.md): current status, next gate and release record.
 - Independent reviews: [domain](REVIEW-DOMAIN-FINAL.md),
   [pi supervisor](REVIEW-BRIDGE.md), [sandbox](REVIEW-SANDBOX.md),

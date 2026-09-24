@@ -2,30 +2,26 @@
 
 ## Now
 
-**State: streamed session-first CLI with automatic local-file reopening.**
+**State: session-first CLI with recoverable budget stops and reviewed code delivery.**
 Classification: `INCREMENTAL / EMPIRICAL` for exercised behavior, not a
 quality, efficiency, novelty or general AI-safety claim.
 
-- Bare CLI opens a clean prompt and handles goals underneath. Replies stream;
-  one compact line shows tool activity. Ctrl-C returns to a usable prompt.
-- `/resume` restores saved work and automatically copies recorded local files
-  into a fresh isolated stage. Imported history never authorizes host paths.
-- Keep one Store and Worker: local recovery metadata uses the existing SQLite
-  database, with no daemon, background planning agent or extra provider loop.
-- [Verification](docs/VERIFICATION.md) records 66 passing application checks,
-  live coding across process restarts and synthetic mid-stream stop/continue.
+- One Store and Worker; no daemon, extra planning agent or automatic host writes.
+- Explicit `/budget` and `/continue`; even pre-invocation context stops retain
+  their run outcome and selected files in a fresh-stage continuation workflow.
+- Visible source selection, immutable baselines, `/diff`, and review-bound
+  patch/ZIP export. Source divergence and stale reviews fail visibly.
+- Source bootstrap plus `./goal`; doctor checks prerequisites and real pi imports
+  separately from credentials.
+- [Verification](docs/VERIFICATION.md): 82 application checks, 4 evaluator
+  safeguards, fresh source installation, and live multi-file Luna coding through
+  interruption/restart/changed requirements/export with independent checks.
 
 ## Next
 
-1. **Budget recovery:** expose remaining headroom and an actionable explicit
-   continuation choice. No silent budget expansion or dropped constraints.
-2. **Useful coding handoff:** preview staged changes and export a reviewed diff
-   for the selected project. Do not add unrestricted host writes or a shell as
-   a shortcut around the current execution boundary.
-3. **Startup:** reliable source install and a short launch command; Python,
-   Node and the pinned pi build are still prerequisites. A wheel alone is not
-   a complete distribution.
-4. **Browser, only after the CLI loop is comfortable:** one composer, session
+1. **Owner dogfooding:** use the complete CLI loop on selected Python projects;
+   assess source-selection and review ergonomics within the documented limits.
+2. **Browser, only after the CLI loop is comfortable:** one composer, session
    list and result view; move goal/evidence/effect forms behind details.
 
 Keep wider provider coverage, goal taxonomies, parallel-agent orchestration
@@ -74,6 +70,13 @@ not prerequisites for a useful CLI.
   Replaced assignments cannot roll recovery back. 66 application checks passed.
 - Actual Luna terminal: script output `30`, exit, reopen without file flags,
   automatic file copy and revised output `55`; goal remained draft.
+- Budget-stop recovery before the first invocation; separate assistant text,
+  structured diagnostics, admission headroom and explicit request-preserving continuation.
+- Immutable selected-source baselines, nested ignore handling, stale-review
+  rejection, patch/file export and independent apply/check proof after live coding.
+- Multi-file Python imports within the existing sandbox; no shell/host-write cutover.
+- Clean-checkout bootstrap, exact pi pin checks, `./goal`, and actionable
+  runtime-versus-credential diagnostics; installed workflow exercised outside checkout.
 
 ## Release record
 
