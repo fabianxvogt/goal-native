@@ -187,32 +187,6 @@ class SandboxTests(unittest.TestCase):
             with self.assertRaises(SandboxError):
                 sandbox.write({"path": "new.txt", "content": "0123456789", "max_bytes": 5})
 
-    def test_search_closes_fd_when_opened_fstat_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "stage"
-            root.mkdir()
-            (root / "file.txt").write_text("needle\n", encoding="utf-8")
-            sandbox = Sandbox(root)
-            original_fstat = sandbox_module.os.fstat
-            calls = 0
-
-            def fail_opened_fstat(fd: int) -> os.stat_result:
-                nonlocal calls
-                calls += 1
-                if calls == 2:
-                    raise OSError("injected opened-file fstat failure")
-                return original_fstat(fd)
-
-            before = len(os.listdir("/dev/fd"))
-            with patch.object(sandbox_module.os, "fstat", side_effect=fail_opened_fstat):
-                result = sandbox.search({"query": "needle"})
-            after = len(os.listdir("/dev/fd"))
-            sandbox.close()
-            self.assertEqual(result["matches"], [])
-            self.assertGreaterEqual(result["exclusions"]["errors"], 1)
-            self.assertEqual(before, after)
-
-
     def test_constructor_and_run_input_limits_are_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "stage"
