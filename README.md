@@ -21,12 +21,13 @@ python3 scripts/bootstrap.py
 Bootstrap initializes and checks the exact pinned pi revision, builds its runtime,
 creates `.venv`, and installs the Python entry point. It downloads npm dependencies
 and upstream model-catalog metadata, but performs no login or model call. It refuses
-to reset a dirty/unpinned pi checkout or replace an
-incomplete existing environment. Follow its remediation instead of deleting
-user work. An older system Python needs an explicitly installed Python 3.11+
+to reset a dirty/unpinned pi checkout or install through an incomplete or external
+virtual environment. Follow its remediation instead of deleting user work.
+An older system Python needs an explicitly installed Python 3.11+
 (for example `python3.12 scripts/bootstrap.py`).
 
-`doctor` separates runtime prerequisites from credentials and reports missing
+`doctor` verifies safe, clean, exactly pinned pi source before probing runtime
+imports. It separates runtime prerequisites from credentials and reports missing
 steps without printing tokens or calling a model. Before login, credential
 readiness is expected to be false. Pi refreshes expired OAuth access tokens on
 the next explicit run. `./goal` works from any caller directory using the
@@ -69,7 +70,8 @@ run, approve or resume paused work until you send a request or explicitly `/cont
 
 Assistant replies stream as they arrive. One compact terminal line shows current
 tool activity; thinking blocks, raw tool results and traces stay out of the
-default view. A completed response is not printed twice.
+default view. Completed responses are not printed twice; Ctrl-C also retains
+visible partial assistant text separately from its cancellation diagnostic.
 
 Files carry forward into a **fresh isolated stage**, including after restarting
 the CLI. `/resume` selects the session; a request or `/continue` restores its recorded
@@ -168,6 +170,8 @@ dependency/build directories and credential/controller names, and lists every
 omission. It is not a secret scanner. `/files` shows selected files and exclusions;
 `/changes` lists changes against the immutable initial selected snapshot.
 Ignored inputs never become proposed deletions.
+An explicitly selected artifact remains tracked even under a generated-directory
+name; unrelated generated files remain excluded.
 
 In a session, use `/diff`, then `/export /path/outside/project/change.patch`.
 The export must still match the reviewed bytes, goal contract and observed source

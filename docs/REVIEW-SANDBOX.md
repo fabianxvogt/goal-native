@@ -1,4 +1,23 @@
-# Final review: settled CLI sandbox boundary
+# Sandbox review checkpoints
+
+## Native path-policy correction — 2026-09-24
+
+Actual execution found a profile-level name-policy gap in the earlier assessment:
+replaying the previous rules allowed writes to nested `.eNv`, `credentials.json`
+and `key.pem`. Python-style non-capturing groups were not enforced as intended by
+Seatbelt. Native grouping now denies those paths and root environment-file case
+variants in actual macOS execution. The full 86-check suite passes, including
+the new behavioral regression; no case-sensitive APFS volume was exercised.
+
+This supersedes the earlier credential/controller-path disposition below.
+It is not a host-I/O escape finding or a general sandbox-safety proof. The
+same-user, runtime-directory and resource-isolation limits remain.
+See [current verification](VERIFICATION.md#independent-review-repairs).
+
+## Earlier bounded source review
+
+The retained review below predates this correction; its line numbers and test
+counts describe that earlier snapshot.
 
 **Scope:** Re-review of the repaired `goal_native/sandbox.py` and `tests/test_sandbox.py` against the prior findings. CLI execution only; no UI/browser or unrelated audit.
 

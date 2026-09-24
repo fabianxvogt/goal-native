@@ -11,9 +11,9 @@ quality, efficiency, novelty or general AI-safety claim.
   their run outcome and selected files in a fresh-stage continuation workflow.
 - Visible source selection, immutable baselines, `/diff`, and review-bound
   patch/ZIP export. Source divergence and stale reviews fail visibly.
-- Source bootstrap plus `./goal`; doctor checks prerequisites and real pi imports
-  separately from credentials.
-- [Verification](docs/VERIFICATION.md): 82 application checks, 4 evaluator
+- Source bootstrap plus `./goal`; doctor checks safe, clean, pinned source and
+  real pi imports separately from credentials.
+- [Verification](docs/VERIFICATION.md): 86 application checks, 4 evaluator
   safeguards, fresh source installation, and live multi-file Luna coding through
   interruption/restart/changed requirements/export with independent checks.
 
@@ -77,6 +77,9 @@ not prerequisites for a useful CLI.
 - Multi-file Python imports within the existing sandbox; no shell/host-write cutover.
 - Clean-checkout bootstrap, exact pi pin checks, `./goal`, and actionable
   runtime-versus-credential diagnostics; installed workflow exercised outside checkout.
+- Independent-review repairs: persisted partial-stream cancellation, explicit
+  generated-path artifacts, external-interpreter refusal, shared pi source checks,
+  and native credential-path regex enforcement at root and nested paths.
 
 ## Release record
 

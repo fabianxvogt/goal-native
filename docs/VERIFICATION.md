@@ -12,10 +12,10 @@ at `a7d17e39aaa0091c7573d0790714751956f10bd1`, package version `0.87.1`.
 
 ## Budget recovery and reviewed coding delivery
 
-**82 application checks passed** with ResourceWarning treated as an error.
-The five installation checks also passed after the dependency/doctor repair;
-all **4 evaluator safeguards** and `python -m evaluation smoke` passed. These
-are correctness checks, not a comparative model evaluation.
+**86 application checks passed**, including six installation checks, with
+ResourceWarning treated as an error. All **4 evaluator safeguards** and
+`python -m evaluation smoke` passed. These are correctness checks, not a
+comparative model evaluation.
 
 Actual CLI → Node → pi → loopback HTTP, with explicitly synthetic responses:
 
@@ -95,6 +95,34 @@ network access for dependencies and upstream model metadata; the catalog is
 not a bit-for-bit frozen build input. Unused upstream dev-dependency engine and
 deprecation warnings remained visible on Node 22.23.2. A wheel alone is still
 not a standalone distribution.
+
+### Independent-review repairs
+
+Two independent Luna/xhigh reviews covered budget/stream recovery and
+source delivery/installation. Their findings produced these exercised repairs:
+
+- Cancelling after visible streamed text but before `turn_end` initially lost
+  that text and printed a false empty-response fallback. The actual CLI now
+  saves the partial reply, displays it once, and records cancellation separately.
+- A synthetic `.venv/bin/python` pointing at an external interpreter was initially
+  accepted. Bootstrap now rejects it before pip runs, preserving the existing path.
+- Explicit `build/foo.py` was staged but absent from the baseline/export.
+  Selection now retains that artifact through a fresh-stage continuation and
+  reviewed ZIP export, without including unrelated generated files.
+- Doctor initially reported ready for clean pi source at the wrong commit.
+  Shared read-only source checks now reject it before bridge imports; bootstrap
+  rejects it without changing the checkout and gives exact-pin remediation.
+  Restoring the exact pin then completed a full rebuild/editable install in the
+  validated existing venv; doctor reported runtime/import readiness and separately
+  missing credentials.
+- Native execution disproved an initial source-only counterargument about the
+  credential regex. Replaying the previous profile allowed writes to nested
+  `.eNv`, `credentials.json` and `key.pem`. Seatbelt did not enforce Python-style
+  `(?:...)` groups as intended. Native grouping now denies those paths and root
+  case variants in actual macOS execution; a permanent behavioral regression
+  passes. No case-sensitive APFS volume was exercised.
+
+These repairs close the exercised findings, not the broader isolation limits below.
 
 Limits: source filters are not a secret scanner; same-user host tampering,
 abrupt-death task lifetime, runtime disk/memory quotas and non-macOS execution
