@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -25,7 +26,10 @@ from .context import ContextBudget
 from .sandbox import Sandbox, SandboxError, SandboxUnavailable
 from .store import Store
 from .worker import Worker
-from .workspace import blocked_component, copy_selected_directory, snapshot_directory
+from .workspace import (
+    blocked_component, copy_selected_directory, export_reviewed,
+    review_workspace, snapshot_directory,
+)
 
 
 _MAX_TEXT = 250_000
@@ -670,6 +674,56 @@ def _goal_summary(goal: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _code_command(state: str, goal_id: str, command: str, args: argparse.Namespace | None = None) -> dict[str, Any]:
+    with Store(_state_path(state)) as store:
+        stage = _local_stage_path(store, goal_id)
+        if stage is None:
+            raise ValueError("No local session files are recorded. Run with selected files before reviewing changes.")
+        if command == "export-code":
+            if args is None:
+                raise ValueError("code export requires an output path and review ID")
+            return export_reviewed(store, goal_id, stage, args.review, Path(args.output), args.format)
+        report, files = review_workspace(store, goal_id, stage)
+    if command == "files":
+        return {
+            "source_selection": report["selection"],
+            "candidate_files": [{"path": path, **{key: item[key] for key in ("sha256", "bytes", "mode")}}
+                                for path, item in sorted(files.items())],
+            "candidate_exclusions": report["candidate_exclusions"],
+        }
+    if command == "changes":
+        return {key: value for key, value in report.items() if key not in {"review_id", "patch"}}
+    return report
+
+
+def _print_code_review(command: str, report: dict[str, Any]) -> None:
+    print()
+    if command == "files":
+        for item in report["candidate_files"]:
+            print(_terminal_text(f"  {item['path']}  ({item['bytes']} bytes)"))
+        exclusions = {item["path"]: item["reason"] for item in (
+            report["source_selection"].get("exclusions", []) + report["candidate_exclusions"]
+        )}
+        for path, reason in sorted(exclusions.items()):
+            print(_terminal_text(f"  excluded: {path} — {reason}"))
+        print("Only selected files participate in code export.")
+    else:
+        for change in report["changes"]:
+            suffix = " (binary; files archive only)" if change["binary"] else ""
+            print(_terminal_text(f"  {change['status']:8} {change['path']}{suffix}"))
+        if not report["changes"]:
+            print("No staged changes.")
+        print(_terminal_text(f"Original source: {report['source_status']['state']}"))
+        for path in report["source_status"]["changed_paths"]:
+            print(_terminal_text(f"  source diverged: {path}"))
+        if command == "diff":
+            print(_terminal_text(report["patch"]))
+            print(_terminal_text(f"Review: {report['review_id']}"))
+            print("Use /export PATH [--format files]. Changed bytes or source state require a new /diff.")
+        print(report["note"])
+    print()
+
+
 def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     command = args.command
     state = args.state
@@ -687,6 +741,11 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         with Store(_state_path(state)) as store:
             goal = store.goal(args.goal_id)
             return _goal_summary(goal) if args.summary else goal, 0
+    if command == "source-preview":
+        _, selection = snapshot_directory(Path(args.path))
+        return selection, 0
+    if command in {"files", "changes", "diff", "export-code"}:
+        return _code_command(state, args.goal_id, command, args), 0
     if command == "request":
         text = _required_text(args.text, args.text_option, "text")
         with Store(_state_path(state)) as store:
@@ -911,10 +970,11 @@ def _chat(args: argparse.Namespace) -> int:
 
     print(_terminal_text(f"\nGoal Native  /  {args.model}  /  {args.provider}"))
     print("New session. Just type a request; goals are saved automatically.")
-    print("/new  /sessions  /resume <number or id>  /status  /help  /exit\n")
+    print("/new  /sessions  /resume <number or id>  /status  /changes  /diff  /help  /exit\n")
     goal_id: str | None = None
     seeded_goals: set[str] = set()
     listed_ids: list[str] = []
+    reviewed: dict[str, str] = {}
     last_status = 0
     while True:
         try:
@@ -943,6 +1003,10 @@ def _chat(args: argparse.Namespace) -> int:
                         "/sessions  List saved sessions\n"
                         "/resume N  Open a listed session (or use its full ID)\n"
                         "/status    Show work, goal state and local file location\n"
+                        "/files     Inspect selected files and exclusions\n"
+                        "/changes   List staged changes and source divergence\n"
+                        "/diff      Review the exact changes before export\n"
+                        "/export PATH [--format files]  Export the last reviewed patch or files ZIP\n"
                         "/exit      Leave; saved work stays on disk\n"
                         "End a line with \\ for multiline input. Ctrl-C stops a run.\n"
                         "Draft-only: responses never approve or deliver effects.\n"
@@ -986,6 +1050,26 @@ def _chat(args: argparse.Namespace) -> int:
                         print("\nNew session; nothing saved until your first request.\n")
                     else:
                         _chat_status(args.state, goal_id)
+                    continue
+                if command in {"/files", "/changes", "/diff"} and not argument:
+                    if goal_id is None:
+                        raise ValueError("Select a saved session first.")
+                    code_command = command[1:]
+                    report = _code_command(args.state, goal_id, code_command)
+                    _print_code_review(code_command, report)
+                    if code_command == "diff":
+                        reviewed[goal_id] = report["review_id"]
+                    continue
+                if command == "/export" and argument:
+                    if goal_id is None or goal_id not in reviewed:
+                        raise ValueError("Run /diff in this session before exporting.")
+                    parser = _CLIArgumentParser(prog="/export", add_help=False)
+                    parser.add_argument("output")
+                    parser.add_argument("--format", choices=("patch", "files"), default="patch")
+                    export_args = parser.parse_args(shlex.split(argument))
+                    export_args.review = reviewed[goal_id]
+                    exported = _code_command(args.state, goal_id, "export-code", export_args)
+                    print(_terminal_text(f"\nExported {exported['format']}: {exported['output_path']}\nSHA-256: {exported['sha256']}\n"))
                     continue
                 raise ValueError("Unknown command or arguments. Use /help.")
 
@@ -1175,6 +1259,19 @@ def build_parser() -> argparse.ArgumentParser:
         effect_parser.add_argument("effect_id")
         if name == "commit":
             effect_parser.add_argument("--lose-response", action="store_true")
+
+    source_preview = subparsers.add_parser("source-preview", help="inspect source selection and exclusions without a model call")
+    source_preview.add_argument("path")
+    for name in ("files", "changes", "diff"):
+        code_parser = subparsers.add_parser(name, help=f"{name} for the current local staged candidate")
+        _add_state_option(code_parser)
+        code_parser.add_argument("goal_id")
+    export_code = subparsers.add_parser("export-code", help="export exact reviewed code without modifying the host project")
+    _add_state_option(export_code)
+    export_code.add_argument("goal_id")
+    export_code.add_argument("--review", required=True, help="review ID returned by diff")
+    export_code.add_argument("--output", required=True, help="new file outside source/state; never overwrites")
+    export_code.add_argument("--format", choices=("patch", "files"), default="patch")
 
     export = subparsers.add_parser("export", help="export the complete portable workspace")
     _add_state_option(export)
