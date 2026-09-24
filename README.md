@@ -4,7 +4,7 @@
 
 A local-first AI execution environment where the workspace is a goal—not a conversation. It keeps requirements, revisions, artifacts, observations and acceptance separate, so an interrupted task can leave useful work behind without silently granting an old agent permission to act.
 
-**Status: CLI-first, Codex subscription protocol verified; live account acceptance pending.** This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) distinguishes real CLI/OS execution from protocol fixtures. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocol](docs/EVALUATION.md) govern broader claims.
+**Status: CLI-first; live Luna subscription execution and changed-requirement continuation exercised.** This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) distinguishes live CLI/OS execution from protocol fixtures. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocol](docs/EVALUATION.md) govern broader claims.
 
 ## Run locally
 
@@ -15,7 +15,7 @@ git submodule update --init --recursive
 npm run bootstrap:upstream
 python3 -m goal_native login
 python3 -m goal_native models
-python3 -m goal_native doctor --model gpt-6-astra
+python3 -m goal_native doctor --model gpt-6-luna
 ```
 If the system Python is older, use the project environment (for example
 `.venv/bin/python`) or `uv run --no-project --python 3.12 python -m goal_native`.
@@ -33,7 +33,7 @@ python3 -m goal_native revise --state .state GOAL_ID --expected-revision 1 \
 python3 -m goal_native artifacts add --state .state GOAL_ID \
   --text "Human-provided source note" --name source-note
 python3 -m goal_native artifacts list --state .state GOAL_ID
-python3 -m goal_native run --state .state --model gpt-6-astra GOAL_ID
+python3 -m goal_native run --state .state --model gpt-6-luna GOAL_ID
 python3 -m goal_native export --state .state --output workspace.json
 python3 -m goal_native import --state restored-state workspace.json
 ```
@@ -49,7 +49,41 @@ source is never executed directly by the controller.
 Exclusions are name-based, not a secret scanner: review selected files before
 sending their contents to a provider.
 
-Browser/UI development is **paused until the CLI live-provider gate is satisfied**. The existing optional server is retained, not presented as a finished UI release:
+### Inspect and continue work
+
+```sh
+python3 -m goal_native show GOAL_ID --summary
+python3 -m goal_native request GOAL_ID "Update the calculation for 20 items"
+python3 -m goal_native resume GOAL_ID --model gpt-6-luna \
+  --artifact-id ARTIFACT_ID --artifact-path calculate.py --context-budget 32768
+```
+
+Select an artifact ID from the summary, or pass `--source-dir` with a previously
+retained stage directory. Resuming always creates a new isolated stage; it does
+not silently reuse a mutable directory. Durable artifacts and current requests
+also feed the context compiler.
+
+The summary separates `goal_status`, individual invocations, and `recorded_runs`.
+A finished invocation is one completed provider turn, not necessarily a
+successful whole run or accepted goal. New CLI run receipts retain the returned
+status, diagnostic, stage location and selected budgets. Older runs, Ctrl-C,
+abrupt termination and failures before the first invocation may have no run receipt;
+missing records are not inferred successes.
+
+`matches_current_contract` compares revision/input/authority versions only,
+not assignment liveness or acceptance. Historical artifacts retain their trust,
+limitations and versions. Summary output omits provider traces, context
+artifacts and artifact bodies, but tool receipts can contain source/output:
+**it is not a redacted or fixed-size export**. Full `show` retains raw traces.
+
+`--context-budget` applies to `run`, `resume` and `ask`; default **16384** is
+unchanged. It is a conservative UTF-8-byte token ceiling including reserves,
+not actual billed tokens. Explicitly raising it permits a larger request;
+model-window checks, round/time limits and mandatory-context admission remain.
+The live continuation check needed **32768** after exhausting the default.
+No silent truncation, automatic retry or Codex output-token cap is introduced.
+
+The basic live CLI gate is satisfied. The optional server is preserved; its goal-centered UI is the next workstream, not a finished UI release:
 
 ```sh
 python3 -m goal_native serve --state .state --port 8765

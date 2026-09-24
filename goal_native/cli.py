@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .context import ContextBudget
 from .sandbox import Sandbox, SandboxError, SandboxUnavailable
 from .store import Store
 from .worker import Worker
@@ -405,6 +406,7 @@ def _run_existing(state: str, goal_id: str, args: argparse.Namespace) -> dict[st
     started = False
     stage_manifest: dict[str, Any] = {"source": None, "artifact": None}
     try:
+        context_budget = ContextBudget(max_context_tokens=args.context_budget)
         model, api_key = _credential(args)
         state_root = _state_path(state)
         state_root.mkdir(parents=True, exist_ok=True)
@@ -428,6 +430,7 @@ def _run_existing(state: str, goal_id: str, args: argparse.Namespace) -> dict[st
                     api_key=api_key,
                     max_rounds=args.max_rounds,
                     sandbox=sandbox,
+                    context_budget=context_budget,
                     max_total_seconds=args.max_time,
                     provider=args.provider,
                     auth_file=_auth_path(args) if args.provider == "openai-codex" else None,
@@ -439,6 +442,17 @@ def _run_existing(state: str, goal_id: str, args: argparse.Namespace) -> dict[st
                     result["stage_dir"] = str(stage_root)
                     result["stage_inputs"] = stage_manifest
                     result["run_started"] = True
+                    if result.get("invocation_id") is not None:
+                        store.receipt(
+                            result["invocation_id"], "controller.cli.run",
+                            {
+                                "model": model, "provider": args.provider,
+                                "context_budget": args.context_budget,
+                                "max_rounds": args.max_rounds, "max_time": args.max_time,
+                            },
+                            result,
+                            note="CLI termination report, not goal acceptance; stage paths are local and not exported file contents.",
+                        )
                     return result
                 except KeyboardInterrupt as exc:
                     worker.cancel()
@@ -688,6 +702,50 @@ def _read_import_json(source: Path | None) -> Any:
         raise ValueError(f"import file is not valid JSON: {location}") from exc
 
 
+def _goal_summary(goal: dict[str, Any]) -> dict[str, Any]:
+    """Project recorded work without treating completion as acceptance."""
+    invocations = [
+        {
+            **{key: invocation[key] for key in (
+                "id", "assignment_id", "status", "result", "created_at",
+                "finished_at", "revision", "input_version", "authority_version",
+                "evidence",
+            )},
+            "usage": invocation["usage"]["normalized"] if invocation["usage"] is not None else None,
+            "matches_current_contract": all(
+                invocation[key] == goal[key]
+                for key in ("revision", "input_version", "authority_version")
+            ),
+            "tools": [
+                receipt for receipt in invocation["receipts"]
+                if receipt["tool"].startswith("tool.")
+            ],
+        }
+        for invocation in goal["invocations"]
+    ]
+    return {
+        **{key: goal[key] for key in (
+            "id", "outcome", "revision", "input_version", "authority_version",
+            "effects_allowed", "authority_mode",
+        )},
+        "goal_status": goal["status"],
+        "latest_invocation_status": invocations[-1]["status"] if invocations else None,
+        "invocations": invocations,
+        "recorded_runs": [
+            receipt for invocation in goal["invocations"]
+            for receipt in invocation["receipts"]
+            if receipt["tool"] == "controller.cli.run"
+        ],
+        "artifacts": [
+            {key: value for key, value in artifact.items() if key != "content"}
+            for artifact in goal["artifacts"]
+            if artifact["kind"] != "context"
+        ],
+        "acceptances": goal["acceptances"],
+        "effects": goal["effects"],
+    }
+
+
 def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     command = args.command
     state = args.state
@@ -703,7 +761,8 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
             return {"goals": store.list_goals()}, 0
     if command == "show":
         with Store(_state_path(state)) as store:
-            return store.goal(args.goal_id), 0
+            goal = store.goal(args.goal_id)
+            return _goal_summary(goal) if args.summary else goal, 0
     if command == "request":
         text = _required_text(args.text, args.text_option, "text")
         with Store(_state_path(state)) as store:
@@ -816,6 +875,10 @@ def _add_worker_options(parser: argparse.ArgumentParser) -> None:
     _add_provider_options(parser)
     parser.add_argument("--max-rounds", type=_positive_int, default=12)
     parser.add_argument("--max-time", type=_positive_float, default=300.0, dest="max_time")
+    parser.add_argument(
+        "--context-budget", type=_positive_int, default=ContextBudget.max_context_tokens,
+        help="conservative whole-request token ceiling including reserves (default: %(default)s); not a Codex output cap",
+    )
     parser.add_argument("--source-dir", dest="source_dir", help="copy this selected local directory into the staged capability")
     artifact_group = parser.add_mutually_exclusive_group()
     artifact_group.add_argument("--artifact", help="artifact id, or exact artifact name")
@@ -862,6 +925,10 @@ def build_parser() -> argparse.ArgumentParser:
     show = subparsers.add_parser("show", help="show one goal and its durable records")
     _add_state_option(show)
     show.add_argument("goal_id")
+    show.add_argument(
+        "--summary", action="store_true",
+        help="show recorded work, tool receipts and delivery without provider traces or artifact bodies",
+    )
 
     request = subparsers.add_parser("request", help="record a request or pause/cancel/draft/resume control")
     _add_state_option(request)

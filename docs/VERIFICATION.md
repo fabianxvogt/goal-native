@@ -2,7 +2,7 @@
 
 Classification: **INCREMENTAL / EMPIRICAL**. These are implementation and
 protocol observations, not model-quality, efficiency or general safety proofs.
-UI development and additional subscription providers remain deferred.
+This checkpoint remains CLI-first; browser UI and other providers were not changed.
 
 ## Exercised environment
 
@@ -10,7 +10,60 @@ Darwin 25.5 / arm64; Python 3.12.12; Node 22.23.2. Pi source is the submodule
 at `a7d17e39aaa0091c7573d0790714751956f10bd1`, package version `0.87.1`.
 `npm run build:upstream` passed, including the cloned credential-store build.
 
-## Executed checks
+## Live Luna continuation checkpoint
+
+Owner **REPORTED** successful OAuth doctor checks and a three-round live
+`gpt-6-luna` Fibonacci run. That observed user success was not rerun merely
+to reconfirm it. Subsequent **EMPIRICAL** checks used only `gpt-6-luna`,
+through the actual CLI, cloned pi subscription adapter and macOS sandbox:
+
+| Attempt | Observed result |
+| --- | --- |
+| Initial task, 4 invocations | Wrote/executed `calculate.py`, stdout `55`, exit 0; saved exact worker-produced source artifact. |
+| Changed requirement, 4 invocations | Requested sum 1–20 and staged the original artifact. The next request stopped at conservative admission: `17201 > 16384`; CLI failed, not accepted. Partial work remained. |
+| Explicit-budget recovery, 5 invocations | `resume --artifact-id ... --artifact-path calculate.py --context-budget 32768`; new isolated stage, source read/updated/saved, stdout `210`, exit 0. Goal remained draft with no acceptance. |
+| Round-stop probe, 1 invocation | `--max-rounds 1` stopped a multi-tool task: CLI exit 1, recorded run `interrupted` although its completed provider invocation was `finished`. |
+
+All **14 live invocations** supplied usage: **18,643 input + 703 output =
+19,346 total tokens** reported by the provider, including the failed attempt
+and stop probe. This is one synthetic arithmetic workflow, not a benchmark
+or evidence of comparative efficiency. No automatic retry or budget expansion.
+
+The failed attempt exposed that invocation completion does not record later
+run-level budget failure. New CLI outcomes with an invocation ID now persist
+as `controller.cli.run` receipts. The actual successful and interrupted
+responses exactly matched their reopened `show --summary` run records.
+The pre-change failed attempt was retained in this evidence, not fabricated
+retroactively as a new receipt. Export/import preserved the new receipt while
+effect permission remained disabled. An invalid explicit budget of 2048 was
+rejected before a provider request.
+
+**33 model-free tests passed** with ResourceWarning treated as an error:
+the new CLI summary stale-contract/completed-turn-versus-failed-run boundary,
+existing CLI lifecycle, context, Store, import, lifecycle and sandbox modules.
+No full-suite rerun is claimed for this checkpoint. The initial baseline below
+is retained separately. Temporary synthetic workspaces were removed after
+verification; no owner workspace or credentials were copied into publication.
+
+Limits: `matches_current_contract` is version equality, not assignment liveness
+or acceptance. Run receipt coverage excludes older runs, no-invocation
+failures, Ctrl-C and abrupt termination. Summaries are not fixed-size/redacted exports;
+tool results may contain task content, while raw provider usage/traces remain
+available in full `show`. The default conservative budget remains 16384;
+continuation can still require explicit additional headroom.
+
+### Independent review
+
+`GoalNativeContinuationReview`, exact runtime `openai-codex/gpt-6-luna` at
+`xhigh`, reviewed the settled CLI/test diff and relevant Store, budget and API
+contracts. **Bounded approval; no correctness/security blocker.** It performed
+no additional tests; execution proof above belongs to the parent. It retained
+the non-redacted-output and incomplete receipt-coverage limits. Parent
+clarification of review wording: the observed round-budget stop was orderly,
+not abrupt termination; its different invocation/run states were correctly
+recorded. Review does not establish broad reliability or performance gains.
+
+## Initial protocol baseline checks
 
 ```sh
 python3.12 -W error::ResourceWarning -m unittest discover -s tests -v
@@ -23,8 +76,8 @@ python3.12 -m evaluation smoke
 - **4 evaluation safeguards passed**. The smoke command rejected incomplete
   matrices, unknown-as-zero usage, scripted providers and collapsed-arm claims.
 - Actual CLI `models` listed the eight pinned Codex model IDs.
-- Actual default `auth-status` returned `configured: false`. No live account
-  authorization or subscription inference was performed.
+- Before owner authorization, default `auth-status` returned `configured: false`.
+  This initial protocol baseline made no live subscription inference.
 - The installed `.venv/bin/goal-native` entrypoint and dependency-free
   `uv run --no-project --python 3.12 python -m goal_native --help` passed.
   Plain project-synchronized `uv run ... goal-native --help` timed out twice
@@ -64,10 +117,9 @@ are fixture values, not measured model costs.
 
 ## Limits and next acceptance
 
-1. **Owner action:** run `python -m goal_native login`, open its URL, then use
-   `auth-status` and an explicitly selected catalog model for live CLI acceptance.
-   An existing pi-format store can be selected with `--auth-file`; no secret
-   should be pasted into chat. Catalog membership does not prove entitlement.
+1. **Basic live CLI gate satisfied:** owner authorization and Luna task execution
+   plus changed-requirement recovery were exercised. Broader reliability,
+   interruption-heavy continuation and other models/providers remain unproven.
 2. Codex's pinned request schema has no enforced output-token cap. Receipts
    disclose that capability; input admission and cooperative time/round limits
    are not a substitute for an output cap or complete resource isolation.
@@ -77,5 +129,5 @@ are fixture values, not measured model costs.
 4. The native-pi comparison adapter and matched-budget subscription evaluation
    remain outstanding. Collapsed controls, synthetic protocol responses and
    passing tests establish no comparative efficiency or model-quality gain.
-5. The preserved browser interface is not the current release gate. No further
-   UI work resumes until the owner-required live CLI gate is satisfied.
+5. The preserved browser interface is not a finished UI release. Its next
+   implementation/verification pass is no longer blocked on basic live login.

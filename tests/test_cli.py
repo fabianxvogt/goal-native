@@ -94,6 +94,52 @@ class CLISubprocessTests(unittest.TestCase):
         self.assertIsInstance(payload, dict)
         return payload
 
+    def test_summary_distinguishes_finished_work_from_changed_contract_and_acceptance(self) -> None:
+        from goal_native.store import Store
+
+        with tempfile.TemporaryDirectory(prefix="goal-native-cli-summary-") as temporary:
+            goal = self.run_cli("create", "Calculate a local result", "--state", temporary)
+            goal_id = goal["id"]
+            empty = self.run_cli("show", goal_id, "--summary", "--state", temporary)
+            self.assertIsNone(empty["latest_invocation_status"])
+            with Store(Path(temporary)) as store:
+                assignment = store.assign(goal_id)
+                invocation = store.invoke(goal_id, assignment["id"], {"messages": ["private trace"]})
+                artifact = store.artifact(
+                    goal_id, invocation["id"], "candidate", "42",
+                    name="answer", trust="worker", limitations="Not independently checked",
+                )
+                store.receipt(
+                    invocation["id"], "tool.staged_run", {"arguments": {"argv": ["python", "answer.py"]}},
+                    {"stdout": "42\n", "exit_code": 0},
+                )
+                store.finish(invocation["id"], "finished", "Calculated 42")
+                # A completed provider turn can precede a rejected next request.
+                store.receipt(
+                    invocation["id"], "controller.cli.run", {},
+                    {"status": "failed", "result": "Context budget exhausted"},
+                )
+            completed = self.run_cli("show", goal_id, "--summary", "--state", temporary)
+            self.assertEqual("finished", completed["latest_invocation_status"])
+            self.assertEqual("failed", completed["recorded_runs"][0]["result"]["status"])
+            self.assertEqual("draft", completed["goal_status"])
+            self.assertEqual([], completed["acceptances"])
+            self.assertIsNone(completed["invocations"][0]["usage"])
+            self.assertTrue(completed["invocations"][0]["matches_current_contract"])
+            self.assertEqual(
+                {"stdout": "42\n", "exit_code": 0},
+                completed["invocations"][0]["tools"][0]["result"],
+            )
+            self.assertEqual([artifact["id"]], [item["id"] for item in completed["artifacts"]])
+            self.assertEqual("worker", completed["artifacts"][0]["trust"])
+            self.assertEqual("Not independently checked", completed["artifacts"][0]["limitations"])
+            self.run_cli("request", goal_id, "Now calculate the revised result", "--state", temporary)
+            changed = self.run_cli("show", goal_id, "--summary", "--state", temporary)
+            self.assertFalse(changed["invocations"][0]["matches_current_contract"])
+            self.assertEqual("finished", changed["latest_invocation_status"])
+            self.assertEqual([], changed["acceptances"])
+            self.assertEqual(completed["artifacts"], changed["artifacts"])
+
     def test_durable_lifecycle_mock_effect_export_import_and_stale_input(self) -> None:
         with tempfile.TemporaryDirectory(prefix="goal-native-cli-") as temporary:
             state = Path(temporary) / "state"

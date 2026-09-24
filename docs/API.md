@@ -39,6 +39,29 @@ receipts mark `provider_output_limit_supported=false`; input admission,
 round limits and cooperative timeouts still apply. Do not claim matched
 full-context/output-budget evaluation without resolving that difference.
 
+CLI `show GOAL_ID --summary` projects the canonical goal snapshot into separate
+goal status, invocations (normalized usage, exact tool receipts and evidence),
+artifact metadata, historical acceptances/effects and `recorded_runs`.
+`matches_current_contract` means revision/input/authority equality only; it
+does not certify assignment liveness or acceptance. Provider traces and context
+artifact bodies are omitted; tool results/parameters remain untrusted task
+content and may be large. Full `show` is unchanged.
+
+After a Worker returns with an invocation ID, CLI `run`/`resume`/`ask` records
+the returned outcome as a `controller.cli.run` receipt on that invocation.
+Parameters preserve model/provider/context/round/time selections; the result
+includes local stage path and input manifest. One finished provider invocation
+can precede a failed/interrupted whole run; do not infer run success from it.
+Historical/imported receipts are records, not executable authority. Receipt
+coverage excludes older runs, Ctrl-C, abrupt process termination and no-invocation
+failures. Stage paths survive export as metadata, not portable file contents.
+
+Those execution commands accept `--context-budget` (default 16384), passed to
+the existing ContextBudget whole-request ceiling including reserves. Admission
+remains conservative UTF-8-byte based, with Worker model-window checks. Raising
+the ceiling is explicit user permission for larger input, not an output cap,
+automatic retry or permission to omit binding context.
+
 # HTTP integration
 
 Localhost-only stdlib server, same-origin/Host validation, JSON mutation API; no arbitrary host file import. GET /api/goals, /api/goals/{id}, /api/export, /api/config. POST /api/goals; /api/goals/{id}/request, /revise, /run, /cancel, /artifacts, /accept; /api/effects/{id}/approve, /commit, /reconcile; /api/import. UI can make local manual draft artifact via controller invocation (explicitly human producer), then assess/prepare a mock effect through human-only endpoint. All user-supplied text rendered with textContent, never HTML. UI shows separate work/evidence/delivery, provenance, revisions, meaningful changes, full traces, export/reopen, errors. Worker missing key/model fails explicitly, not demonstration fallback.
