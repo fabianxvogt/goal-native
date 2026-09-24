@@ -227,8 +227,11 @@ def snapshot_directory(
                    "excluded": len(exclusions), "selected": sorted(files), "exclusions": exclusions}
 
 
-def copy_selected_directory(source: str, destination: Path) -> dict[str, Any]:
-    files, selection = snapshot_directory(Path(source))
+def copy_selected_directory(
+    source: str, destination: Path, *, tracked: Iterable[str] = (),
+    excluded: Iterable[dict[str, str]] = (), strict: bool = False,
+) -> dict[str, Any]:
+    files, selection = snapshot_directory(Path(source), tracked=tracked, excluded=excluded, strict=strict)
     for path, item in files.items():
         target = destination.joinpath(*_safe_relative(path))
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

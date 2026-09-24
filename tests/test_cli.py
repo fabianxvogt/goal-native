@@ -637,38 +637,6 @@ class CLISubprocessTests(unittest.TestCase):
             self.assertEqual(before["status"], after["status"])
             self.assertEqual([], after["invocations"])
 
-    def test_staging_rechecks_opened_sizes_and_records_copied_bytes(self) -> None:
-        from goal_native import cli as cli_module
-
-        with tempfile.TemporaryDirectory(prefix="goal-native-cli-stage-") as temporary:
-            root = Path(temporary)
-            source = root / "source"
-            stage = root / "stage"
-            source.mkdir()
-            stage.mkdir()
-            growing = source / "growing.txt"
-            shrinking = source / "shrinking.txt"
-            growing.write_bytes(b"safe")
-            shrinking.write_bytes(b"safe")
-            real_open = cli_module.os.open
-
-            def mutate_before_open(path: object, flags: int, mode: int = 0o777) -> int:
-                if Path(path).resolve() == growing.resolve():
-                    growing.write_bytes(b"grown")
-                elif Path(path).resolve() == shrinking.resolve():
-                    shrinking.write_bytes(b"ok")
-                return real_open(path, flags, mode)
-
-            with (
-                patch.object(cli_module, "_MAX_SOURCE_FILE_BYTES", 4),
-                patch.object(cli_module.os, "open", side_effect=mutate_before_open),
-            ):
-                counts = cli_module._copy_selected_directory(str(source), stage)
-            self.assertEqual(1, counts["files"])
-            self.assertEqual(2, counts["bytes"])
-            self.assertEqual(1, counts["excluded"])
-            self.assertFalse((stage / "growing.txt").exists())
-            self.assertEqual(b"ok", (stage / "shrinking.txt").read_bytes())
 
     def test_import_rejects_symlinks_and_bounds_file_and_stdin_input(self) -> None:
         from goal_native import cli as cli_module

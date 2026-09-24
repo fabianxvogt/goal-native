@@ -25,12 +25,10 @@ from .context import ContextBudget
 from .sandbox import Sandbox, SandboxError, SandboxUnavailable
 from .store import Store
 from .worker import Worker
+from .workspace import blocked_component, copy_selected_directory, snapshot_directory
 
 
 _MAX_TEXT = 250_000
-_MAX_STAGE_FILES = 4_096
-_MAX_STAGE_BYTES = 64 * 1024 * 1024
-_MAX_SOURCE_FILE_BYTES = 16 * 1024 * 1024
 _MAX_IMPORT_BYTES = 64 * 1024 * 1024
 _SAFE_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -107,141 +105,6 @@ def _json_or_text(value: str | None) -> Any:
         return value
 
 
-def _secret_component(name: str) -> bool:
-    lowered = name.casefold()
-    credential_name = re.search(
-        r"(?:^|[_.-])(api[_-]?key|access[_-]?key|client[_-]?secret|password|passwd|auth|credential|token)(?:$|[_.-])",
-        lowered,
-    )
-    return (
-        lowered == ".env"
-        or lowered.startswith(".env.")
-        or lowered in {
-            ".git",
-            ".state",
-            "credentials",
-            "credential",
-            "private",
-            "secret",
-            "secrets",
-            "controller",
-            ".ssh",
-            ".aws",
-            "store.sqlite3",
-            "store.sqlite3-wal",
-            "store.sqlite3-shm",
-            "stages",
-        }
-        or "credential" in lowered
-        or "secret" in lowered
-        or credential_name is not None
-        or lowered.endswith((".pem", ".key", ".p12", ".pfx", ".secret"))
-        or lowered in {"id_rsa", "id_ed25519", ".npmrc"}
-    )
-
-
-def _copy_selected_directory(source_value: str, stage_root: Path) -> dict[str, int]:
-    source = Path(source_value).expanduser()
-    try:
-        source_info = source.lstat()
-    except OSError as exc:
-        raise ValueError(f"source directory is unavailable: {source}") from exc
-    if _secret_component(source.name):
-        raise ValueError("--source-dir names a blocked credential or controller directory")
-    if stat.S_ISLNK(source_info.st_mode) or not stat.S_ISDIR(source_info.st_mode):
-        raise ValueError("--source-dir must name a real directory, not a symlink")
-    source = source.resolve()
-    counts = {"files": 0, "bytes": 0, "symlinks": 0, "excluded": 0, "non_regular": 0}
-
-    def visit(source_dir: Path, destination_dir: Path) -> None:
-        try:
-            entries = sorted(os.scandir(source_dir), key=lambda entry: entry.name)
-        except OSError as exc:
-            raise ValueError(f"source directory cannot be read: {source_dir}") from exc
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        for entry in entries:
-            name = entry.name
-            if _secret_component(name):
-                counts["excluded"] += 1
-                continue
-            source_path = Path(entry.path)
-            destination_path = destination_dir / name
-            try:
-                mode = entry.stat(follow_symlinks=False).st_mode
-            except OSError:
-                counts["excluded"] += 1
-                continue
-            if stat.S_ISLNK(mode):
-                counts["symlinks"] += 1
-                continue
-            if stat.S_ISDIR(mode):
-                visit(source_path, destination_path)
-                continue
-            if not stat.S_ISREG(mode):
-                counts["non_regular"] += 1
-                continue
-            size = int(entry.stat(follow_symlinks=False).st_size)
-            if size > _MAX_SOURCE_FILE_BYTES or counts["files"] >= _MAX_STAGE_FILES:
-                counts["excluded"] += 1
-                continue
-            if counts["bytes"] + size > _MAX_STAGE_BYTES:
-                counts["excluded"] += 1
-                continue
-            destination_path.parent.mkdir(parents=True, exist_ok=True)
-            flags = os.O_RDONLY
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            source_fd = -1
-            try:
-                try:
-                    source_fd = os.open(source_path, flags)
-                except OSError as exc:
-                    raise ValueError(f"source file is not safely readable: {source_path}") from exc
-                opened = os.fstat(source_fd)
-                if not stat.S_ISREG(opened.st_mode):
-                    counts["excluded"] += 1
-                    os.close(source_fd)
-                    source_fd = -1
-                    continue
-                size = int(opened.st_size)
-                if size > _MAX_SOURCE_FILE_BYTES or counts["bytes"] + size > _MAX_STAGE_BYTES:
-                    counts["excluded"] += 1
-                    os.close(source_fd)
-                    source_fd = -1
-                    continue
-                limit = min(_MAX_SOURCE_FILE_BYTES, _MAX_STAGE_BYTES - counts["bytes"])
-                copied = 0
-                with os.fdopen(source_fd, "rb") as source_file:
-                    source_fd = -1
-                    with destination_path.open("wb") as destination_file:
-                        while True:
-                            remaining = limit - copied
-                            chunk = source_file.read(min(1024 * 1024, remaining + 1))
-                            if not chunk:
-                                break
-                            if len(chunk) > remaining:
-                                raise ValueError(f"source file changed during staging: {source_path}")
-                            destination_file.write(chunk)
-                            copied += len(chunk)
-                    if os.fstat(source_file.fileno()).st_size > copied:
-                        raise ValueError(f"source file changed during staging: {source_path}")
-                os.chmod(destination_path, stat.S_IMODE(opened.st_mode) & 0o700)
-            except BaseException:
-                if source_fd != -1:
-                    try:
-                        os.close(source_fd)
-                    except OSError:
-                        pass
-                try:
-                    destination_path.unlink()
-                except OSError:
-                    pass
-                raise
-            counts["files"] += 1
-            counts["bytes"] += copied
-
-    visit(source, stage_root)
-    return counts
 
 
 def _safe_stage_path(value: str) -> str:
@@ -250,7 +113,7 @@ def _safe_stage_path(value: str) -> str:
     path = Path(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise ValueError("stage path must stay inside the sandbox")
-    if any(_secret_component(part) for part in path.parts):
+    if any(blocked_component(part) for part in path.parts):
         raise ValueError("stage path names a blocked credential or controller path")
     return path.as_posix()
 
@@ -304,8 +167,15 @@ def _stage_inputs(
     if getattr(args, "artifact_path", None) is not None and artifact is None:
         raise ValueError("--artifact-path requires an artifact")
     manifest: dict[str, Any] = {"source": None, "artifact": None}
+    recovered = getattr(args, "recovered_stage", None)
+    baseline = store.workspace_baseline(goal_id, recovered) if recovered else None
     if source is not None:
-        manifest["source"] = _copy_selected_directory(source, stage_root)
+        manifest["source"] = copy_selected_directory(
+            source, stage_root,
+            tracked=baseline["files"] if baseline else (),
+            excluded=baseline["selection"].get("exclusions", []) if baseline else (),
+            strict=bool(recovered),
+        )
     if artifact is not None:
         content = artifact.get("content")
         if not isinstance(content, str):
@@ -324,6 +194,15 @@ def _stage_inputs(
             "path": path,
             "bytes": len(content.encode("utf-8")),
         }
+    if baseline is None:
+        files, selection = snapshot_directory(stage_root, strict=True)
+        if manifest["source"] is not None:
+            selection = manifest["source"]
+        if source is not None and not recovered:
+            selection["source_root"] = str(Path(source).expanduser().resolve())
+        selection["origin"] = "recovered checkpoint" if recovered else "source" if source else "artifact" if artifact else "empty"
+        baseline = {"files": files, "selection": selection}
+    store.remember_workspace_baseline(goal_id, stage_root.name, baseline["files"], baseline["selection"])
     return manifest
 
 
