@@ -245,6 +245,17 @@ class Store:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS workspace_snapshots (
+                    content_hash TEXT PRIMARY KEY,
+                    files_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS local_workspaces (
+                    goal_id TEXT NOT NULL REFERENCES goals(id),
+                    stage_name TEXT NOT NULL,
+                    baseline_hash TEXT NOT NULL REFERENCES workspace_snapshots(content_hash),
+                    selection_json TEXT NOT NULL,
+                    PRIMARY KEY(goal_id, stage_name)
+                );
                 CREATE INDEX IF NOT EXISTS idx_requests_goal ON requests(goal_id, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_assignments_goal ON assignments(goal_id, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_invocations_goal ON invocations(goal_id, created_at, id);
@@ -1588,6 +1599,50 @@ class Store:
             return self._acceptance_public(
                 conn.execute("SELECT * FROM acceptances WHERE id = ?", (acceptance_id,)).fetchone()
             )
+
+    def remember_workspace_baseline(
+        self, goal_id: str, stage_name: str, files: dict[str, Any], selection: dict[str, Any]
+    ) -> None:
+        """Bind an immutable selected baseline to one local stage, never an import."""
+        if not isinstance(stage_name, str) or not re.fullmatch(r"run-[A-Za-z0-9_-]{1,96}", stage_name):
+            raise ValueError("workspace stage must be a run directory name")
+        if not isinstance(files, dict) or not isinstance(selection, dict):
+            raise ValueError("workspace baseline and selection must be objects")
+        serialized = self._json_dump(files, "workspace files")
+        selected = self._json_dump(selection, "source selection")
+        digest = self._content_hash(serialized)
+        with self._transaction() as conn:
+            self._goal_row(goal_id)
+            existing = conn.execute(
+                "SELECT baseline_hash, selection_json FROM local_workspaces WHERE goal_id = ? AND stage_name = ?",
+                (goal_id, stage_name),
+            ).fetchone()
+            if existing is not None:
+                if existing["baseline_hash"] != digest or existing["selection_json"] != selected:
+                    raise ValueError("workspace baseline is immutable")
+                return
+            conn.execute(
+                "INSERT OR IGNORE INTO workspace_snapshots(content_hash, files_json) VALUES (?, ?)",
+                (digest, serialized),
+            )
+            conn.execute(
+                "INSERT INTO local_workspaces(goal_id, stage_name, baseline_hash, selection_json) VALUES (?, ?, ?, ?)",
+                (goal_id, stage_name, digest, selected),
+            )
+
+    def workspace_baseline(self, goal_id: str, stage_name: str) -> dict[str, Any] | None:
+        with self._lock:
+            self._goal_row(goal_id)
+            row = self._conn.execute(
+                """SELECT snapshots.files_json, local.selection_json
+                FROM local_workspaces AS local JOIN workspace_snapshots AS snapshots
+                    ON snapshots.content_hash = local.baseline_hash
+                WHERE local.goal_id = ? AND local.stage_name = ?""",
+                (goal_id, stage_name),
+            ).fetchone()
+            if row is None:
+                return None
+            return {"files": self._json_load(row["files_json"]), "selection": self._json_load(row["selection_json"])}
 
     @staticmethod
     def _export_rows(store: "Store") -> dict[str, list[dict[str, Any]]]:
