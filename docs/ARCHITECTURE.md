@@ -12,8 +12,8 @@ Upstream [agent-core documentation](https://github.com/badlogic/pi-mono/tree/mai
 
 Subscription authentication reuses pi-ai's provider-owned OAuth flow and
 automatic refresh plus coding-agent's `AuthStorage` (including cross-process
-locking). Only that storage module is imported; no coding-agent session,
-extension or ambient project discovery becomes a second goal-state authority.
+locking). The CLI imports only that storage module; no coding-agent session,
+extension or ambient project discovery becomes its second goal-state authority.
 The CLI defaults to Codex and an app-private credential file outside workspace
 state. Explicit `--auth-file` opts into an existing pi-format store.
 
@@ -49,15 +49,22 @@ provider-reported Responses usage, not the SDK's default zero counters on
 errors. Input includes cached input; cache and reasoning counts are subsets,
 not extra tokens. Missing provider usage remains unknown.
 
+Pre-request admission excludes tool-result `details` and tool-execution `usage`,
+which are UI/accounting metadata rather than provider input. Exact receipts and
+raw events retain them. Tool declarations already carried in pi system messages
+are not counted a second time as shorthand schemas. The final provider payload
+is still independently admitted and captured without dropping task content.
+
 Worker and bridge instances reject concurrent runs. Cancellation rejects
 later admission/tool RPCs and terminates staged execution; each CLI run owns
 a distinct stage directory. Script timeouts are clipped to the remaining
 run budget. Controller transactions and cleanup are bounded operations, not
 preemptively interrupted at an exact wall-clock deadline.
 An already-entered controller transaction may finish during cancellation.
-Its output remains untrusted historical work, not automatic acceptance or
-publication authority. CLI Ctrl-C also records a pause/control-version fence;
-transport abort alone is not a durable authority change.
+Validated partial command output can enter the private recovery stage, carrying
+its failure/cancellation receipt; `published` means stage recovery only, not
+acceptance or source-checkout publication. CLI Ctrl-C also records a
+pause/control-version fence; transport abort alone is not durable authority.
 
 The terminal consumes a controller-only event callback after durable event
 capture. It renders public text and fixed tool labels, not thinking blocks,
@@ -93,13 +100,56 @@ A small in-process launcher reads the pinned entry descriptor and supplies its
 staged filename, script directory and project root so imports, arguments and
 `__file__`-relative data work without a host shell or another process.
 
+Opt-in Docker execution replaces the restricted Python command with a disposable
+Linux process tree. Snapshot transfer uses bounded archives, not host mounts;
+only validated selected outputs can return to the stage after a divergence
+check. The local engine and immutable selected image are trusted. The reviewed
+supervisor uses a read-only root, non-root task identity, process/resource limits,
+stdin-death monitoring and its own deadline. It kills detached descendants too.
+Per-file replacement is atomic, and file↔directory transitions prune only empty
+ancestors of deleted selected files. Multi-file stage updates are not one
+transaction against disk failure or hostile same-user writers. They never write
+the original selected project.
+
+Language tools use this same runtime with offline, nonpublishing commands.
+Definitions/references and diagnostics carry the before-snapshot/image identity.
+Python uses Pyright; TypeScript uses a semantic-only tsserver with explicit
+synchronous diagnostic requests so an early empty syntax publication cannot
+masquerade as a clean result. Position conversion is Unicode codepoints ↔ UTF-16.
+Missing or incomplete server responses remain visible errors.
+Python navigation also waits for an actual analysis publication. Result-file
+cache input is bounded to 8 MiB (decoded structures consume additional heap);
+encoded helper output stays below the standard 64 KiB runtime limit and marks
+omitted results as truncated.
+
 ## Baseline and limits
 
 The full pi coding-agent is a natural operational baseline, retaining its normal memory/session behavior. Sharing pi internals improves comparison fidelity but does not itself prove fairness or superiority. Match capabilities, safety and model settings; disclose differences. Hook documentation is not executed proof; verification records must state what was actually exercised, especially live cancellation, accounting and isolation.
 
+`bridge/native_pi.mjs` now uses the real pinned coding-agent SDK and
+SessionManager for the separate historical coding pilot. Its normal transcript
+and system prompt replace Goal Native's compiled work bundle; its host tools,
+extensions, ambient instructions, compaction and retries are disabled. Both
+arms use the same controller-owned tool schemas, invocation admission and
+Docker images. A fresh bridge process reopens a real persisted native session,
+bound to the task/checker/environment manifest; no replayed summary is called
+native memory. Raw traces and provider-reported IDs/usage are retained outside
+Git. This constrained native-pi baseline is not unrestricted stock pi.
+Native SDK events before controller admission stay in the raw trace but are not
+forwarded as admitted model/tool events. Rejected oversized requests return
+controller interruption state with recoverable session identity, not a fabricated
+provider response or zero-usage success.
+
+`evaluation/coding.py` prepares public source/fix snapshots, verifies source
+failure/reference success, and freezes executable checker and image identities
+before model calls. Worker images contain dependencies, not the reference fix
+or checker. Check-only images execute independent behavioral observations with
+publication disabled. The older four-arm lifecycle protocol stays separate;
+neither shared infrastructure nor the historical pilot opens its claim gates.
+
 ## Context selection
 
-The compiler includes the faithful current contract/request stream and explicitly recorded open questions, blockers and assumptions before optional material. It selects at most 64 recent candidate bundles and two historical invocation observations, retaining input links and recorded qualifications/contradictions together. Oversized optional bundles are omitted, not stripped of caveats; a bounded artifact directory and `read_artifact` support retrieval. Prior compiled-context artifacts are not recursively copied into new prompts.
+The compiler includes the faithful current contract/request stream and explicitly recorded open questions, blockers and assumptions before optional material. It selects at most 64 recent candidate bundles and two historical invocation observations, retaining input links and recorded qualifications/contradictions together. Up to four recent staged-tool receipts from each of those invocations remain available as exact, historical-only observations even if interruption prevented a finding or reply. Oversized optional bundles/receipts are omitted whole, not stripped of caveats; bounded directories plus `read_artifact` and paged `read_receipt` support retrieval. Provider/controller receipts are not model retrieval capabilities. Prior compiled-context artifacts are not recursively copied into new prompts.
 
 The latest request also appears as the final user message, with explicit
 precedence over conflicting older requests/original outcome. Compatible

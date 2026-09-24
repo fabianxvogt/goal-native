@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import tempfile
@@ -373,6 +374,251 @@ open('inside.txt', 'w').write('staged')
             timed = sandbox.run({"path": "timeout.py", "args": [], "timeout_seconds": 0.1})
             self.assertTrue(timed["timed_out"], timed)
             self.assertNotEqual(timed["exit_code"], 0)
+
+
+
+@unittest.skipUnless(sys.version_info >= (3, 11), "Python 3.11+ is required")
+class SandboxRepositoryToolsTests(unittest.TestCase):
+    def _sandbox(self, root: Path) -> Sandbox:
+        sandbox = Sandbox(root, require_os_sandbox=False)
+        self.addCleanup(sandbox.close)
+        return sandbox
+
+    def test_read_ranges_hash_complete_unicode_and_eof(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "unicode.txt"
+            source = "é🙂\nlast line\nEOF"
+            path.write_text(source, encoding="utf-8")
+            sandbox = self._sandbox(root)
+            expected_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+            first = sandbox.read({"path": "unicode.txt", "start_line": 1, "end_line": 1})
+            self.assertEqual("é🙂\n", first["content"])
+            self.assertEqual(len("é🙂\n".encode("utf-8")), first["bytes"])
+            self.assertEqual(expected_hash, first["sha256"])
+            self.assertEqual(len(source.encode("utf-8")), first["file_bytes"])
+            self.assertEqual(3, first["line_count"])
+            self.assertTrue(first["truncated"])
+            self.assertEqual(
+                {"path": "unicode.txt", "start_line": 2, "sha256": expected_hash},
+                first["continuation"],
+            )
+
+            tail = sandbox.read({"path": "unicode.txt", "start_line": 2, "end_line": 99})
+            self.assertEqual("last line\nEOF", tail["content"])
+            self.assertTrue(tail["truncated"])
+            self.assertIsNone(tail["continuation"])
+
+            eof = sandbox.read({"path": "unicode.txt", "start_line": 4})
+            self.assertEqual("", eof["content"])
+            self.assertEqual(3, eof["range"]["end_line"])
+            self.assertTrue(eof["truncated"])
+
+    def test_new_tool_integer_limits_reject_booleans(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "file.txt").write_text("value", encoding="utf-8")
+            sandbox = self._sandbox(root)
+            with self.assertRaises(ValueError):
+                sandbox.read({"path": "file.txt", "start_line": True})
+            with self.assertRaises(ValueError):
+                sandbox.discover({"max_entries": True})
+            with self.assertRaises(ValueError):
+                sandbox.regex_search({"pattern": "value", "timeout_seconds": True})
+            digest = hashlib.sha256(b"value").hexdigest()
+            with self.assertRaises(ValueError):
+                sandbox.edit({
+                    "path": "file.txt",
+                    "expected_sha256": digest,
+                    "edits": [{
+                        "start_line": True,
+                        "start_column": 1,
+                        "end_line": 1,
+                        "end_column": 1,
+                        "replacement": "x",
+                    }],
+                })
+
+    def test_discovery_is_bounded_and_excludes_blocked_and_symlink_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("a", encoding="utf-8")
+            (root / "b.txt").write_text("b", encoding="utf-8")
+            (root / ".env").write_text("secret", encoding="utf-8")
+            (root / "link.txt").symlink_to(root / "a.txt")
+            sandbox = self._sandbox(root)
+
+            complete = sandbox.discover({"path": "."})
+            self.assertEqual(["a.txt", "b.txt"], [item["path"] for item in complete["files"]])
+            self.assertFalse(complete["truncated"])
+            self.assertGreaterEqual(complete["exclusions"]["symlinks"], 1)
+
+            limited = sandbox.discover({"path": ".", "max_files": 1})
+            self.assertEqual(["a.txt"], [item["path"] for item in limited["files"]])
+            self.assertTrue(limited["truncated"])
+            self.assertEqual(1, limited["scope"]["max_files"])
+
+    def test_regex_search_rejects_invalid_and_kills_expensive_patterns(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "code.txt").write_text("value=42\nother\n", encoding="utf-8")
+            sandbox = self._sandbox(root)
+            result = sandbox.regex_search({"pattern": r"value=\d+"})
+            self.assertEqual([("code.txt", 1)], [
+                (match["path"], match["line"]) for match in result["matches"]
+            ])
+            self.assertTrue(result["scope"]["regex"])
+            with self.assertRaises(ValueError):
+                sandbox.regex_search({"pattern": "["})
+
+            (root / "expensive.txt").write_text("a" * 20_000 + "!", encoding="utf-8")
+            with self.assertRaises(SandboxError):
+                sandbox.regex_search({
+                    "pattern": r"(a+)+$",
+                    "path": ".",
+                    "timeout_seconds": 0.2,
+                })
+
+    def test_regex_cancellation_reaps_helper_and_releases_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "code.txt").write_text("a" * 20_000 + "!", encoding="utf-8")
+            sandbox = self._sandbox(root)
+            ready = threading.Event()
+            processes = []
+            errors = []
+            real_popen = sandbox_module.subprocess.Popen
+
+            def capture(*args, **kwargs):
+                process = real_popen(*args, **kwargs)
+                processes.append(process)
+                ready.set()
+                return process
+
+            def search():
+                try:
+                    sandbox.regex_search({"pattern": r"(a+)+$", "timeout_seconds": 10})
+                except BaseException as error:
+                    errors.append(error)
+
+            with patch.object(sandbox_module.subprocess, "Popen", side_effect=capture):
+                thread = threading.Thread(target=search)
+                thread.start()
+                try:
+                    self.assertTrue(ready.wait(5), "regex helper did not start")
+                    sandbox.cancel()
+                    thread.join(2)
+                    self.assertFalse(thread.is_alive(), "cancelled regex remained active")
+                    self.assertIsInstance(errors[0], SandboxError)
+                    self.assertIsNotNone(processes[0].poll())
+                finally:
+                    for process in processes:
+                        if process.poll() is None:
+                            sandbox_module.Sandbox._kill(process)
+                    thread.join(5)
+            result = sandbox.regex_search({"pattern": "^a+"})
+            self.assertEqual(result["matches"][0]["line"], 1)
+
+    def test_edits_require_fresh_hash_and_are_all_or_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "edit.txt"
+            source = "αβ\nsame\nsame\nEOF"
+            path.write_text(source, encoding="utf-8")
+            sandbox = self._sandbox(root)
+            expected = hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+            with self.assertRaises(SandboxError):
+                sandbox.edit({
+                    "path": "edit.txt",
+                    "expected_sha256": "0" * 64,
+                    "edits": [{"old_text": "αβ", "replacement": "changed"}],
+                })
+            self.assertEqual(source, path.read_text(encoding="utf-8"))
+
+            with self.assertRaises(SandboxError):
+                sandbox.edit({
+                    "path": "edit.txt",
+                    "expected_sha256": expected,
+                    "edits": [{"old_text": "same", "replacement": "different"}],
+                })
+            self.assertEqual(source, path.read_text(encoding="utf-8"))
+
+            with self.assertRaises(SandboxError):
+                sandbox.edit({
+                    "path": "edit.txt",
+                    "expected_sha256": expected,
+                    "edits": [
+                        {
+                            "start_line": 1,
+                            "start_column": 1,
+                            "end_line": 1,
+                            "end_column": 3,
+                            "replacement": "x",
+                            "old_text": "αβ",
+                        },
+                        {
+                            "start_line": 1,
+                            "start_column": 2,
+                            "end_line": 1,
+                            "end_column": 3,
+                            "replacement": "y",
+                            "old_text": "β",
+                        },
+                    ],
+                })
+            self.assertEqual(source, path.read_text(encoding="utf-8"))
+
+            edited = sandbox.edit({
+                "path": "edit.txt",
+                "expected_sha256": expected,
+                "edits": [
+                    {
+                        "start_line": 1,
+                        "start_column": 2,
+                        "end_line": 1,
+                        "end_column": 3,
+                        "replacement": "🙂",
+                        "old_text": "β",
+                    },
+                    {
+                        "start_line": 4,
+                        "start_column": 4,
+                        "end_line": 4,
+                        "end_column": 4,
+                        "replacement": "!",
+                    },
+                ],
+            })
+            self.assertTrue(edited["written"])
+            self.assertEqual("α🙂\nsame\nsame\nEOF!", path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                edited["sha256"],
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+
+    def test_edit_rejects_symlink_and_blocked_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "stage"
+            root.mkdir()
+            outside = base / "outside.txt"
+            outside.write_text("outside", encoding="utf-8")
+            (root / "link.txt").symlink_to(outside)
+            sandbox = self._sandbox(root)
+            with self.assertRaises(SandboxError):
+                sandbox.edit({
+                    "path": "link.txt",
+                    "expected_sha256": hashlib.sha256(outside.read_bytes()).hexdigest(),
+                    "edits": [{"old_text": "outside", "replacement": "escape"}],
+                })
+            with self.assertRaises(SandboxError):
+                sandbox.edit({
+                    "path": ".env",
+                    "expected_sha256": "0" * 64,
+                    "edits": [{"old_text": "x", "replacement": "y"}],
+                })
 
 
 class SandboxUnavailableTests(unittest.TestCase):

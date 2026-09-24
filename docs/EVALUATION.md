@@ -1,20 +1,19 @@
 # Lifecycle evaluation contract
 
-Status: **evaluation protocol implemented; no live comparative run claimed**.
-The canonical Store/Worker control exists; a comparable native-session
-baseline adapter and authorized complete evaluation remain outstanding.
-The evaluator therefore proves only its registration, protocol validation,
-deterministic fixture checks, and rejection of incomplete or unfair data. It
-does not manufacture a baseline or call a paid provider.
-Classification: **INCREMENTAL** — evaluation infrastructure and preregistered
-claim gates only; no empirical superiority or novelty result.
+Status: **the four-arm lifecycle protocol is implemented; its complete live
+comparison remains unfulfilled**. The native-session adapter now exists for
+the separate [historical coding pilot](#historical-coding-pilot), not as an
+undisclosed replacement for a missing arm in this protocol. The lifecycle
+evaluator proves registration, protocol validation, fixture checks and
+rejection of incomplete or unfair data; it does not manufacture a baseline.
+Classification: **INCREMENTAL**. No superiority or novelty result.
 
 The CLI's Codex subscription integration is separate from the current
 explicit OpenAI API-profile evaluation driver. Do not pass a Codex model to
 that driver or describe subscription fixtures as comparative evidence.
-Pi's Codex schema lacks an enforced output-token cap; matched-budget
-admission and the native-pi baseline must be resolved before a subscription
-comparison can satisfy this contract.
+Pi's Codex schema lacks an enforced output-token cap. The historical pilot
+discloses this limitation; it does not resolve the matched-output-budget and
+complete four-arm requirements of this lifecycle contract.
 
 ## Scope and acceptance traceability
 
@@ -97,9 +96,9 @@ python3 -m evaluation smoke
 ```
 
 The retained canonical-control driver below explicitly uses the OpenAI API
-profile and requires a separately configured API key. The native-pi
-strong-baseline adapter is not implemented; this command cannot establish
-the four-arm superiority claim:
+profile and requires a separately configured API key. The coding-pilot native
+adapter is not wired into this four-arm protocol; this command alone cannot
+establish the four-arm superiority claim:
 
 ```text
 python3 -m evaluation run \
@@ -272,3 +271,66 @@ These assumptions are limits, not results:
 - No result here establishes novelty, a theorem, or superiority. A future
   claim would require a complete report, an independently reviewed baseline,
   reproducible raw evidence, and human classification outside this evaluator.
+
+## Historical coding pilot
+
+This is a separate executable two-arm development experiment:
+`evaluation.coding` compares canonical Goal Native Worker/context compilation
+with the real pinned native-pi SDK/SessionManager. Both use the same model,
+controller admission, isolated task tools and dependency image. Native pi keeps
+its own transcript and default system prompt; it does not receive Goal Native's
+compiled context. Built-in host tools, ambient instructions/extensions,
+automatic compaction, retries and API billing fallback are disabled.
+
+```sh
+.venv/bin/python -m evaluation.coding register --out /tmp/goal-coding-registration.json
+.venv/bin/python -m evaluation.coding prepare \
+  --root /tmp/goal-coding-prepared --base-image goal-native-runtime:local
+.venv/bin/python -m evaluation.coding run \
+  --prepared /tmp/goal-coding-prepared/prepared.json \
+  --output-root /tmp/goal-coding-run --model gpt-6-luna \
+  --max-rounds 12 --max-time-seconds 180 --context-tokens 65536
+```
+
+Preparation downloads deliberately selected public, licensed source archives
+and builds dependency/checker images. It does not call a model. Execution uses
+the explicit existing Codex credential file (`--auth-file` can select another);
+worker commands remain offline. `--task ID` restricts preparation or execution
+to registered tasks. Failed attempts are retained, never overwritten or
+automatically retried. Preparation and run roots must be outside this repo.
+
+The ten frozen issue tasks are five Python cases from pytest/Flask and five
+Prettier cases (four TypeScript behaviors and one Flow behavior; the formatter
+implementation is JavaScript). Source/fix commits, archive/license hashes,
+selected snapshot hashes, checker code, immutable images, tool schemas and
+harness identity are recorded. Before measurement, every pre-fix source must
+fail and every reference must pass both phases. The actual expanded prompts,
+selected matrix, model, bounds and counterbalanced arm order are frozen before
+the first model call.
+
+Each phase has a fresh stage and bridge process. Continuation carries the exact
+cold candidate into a reopened Store or genuine native session, then applies a
+changed request and additional behavioral checks while retaining cold checks.
+Checker code and reference files are absent from worker images and candidates.
+Check-only images return named boolean observations under snapshot/image
+identity checks; a worker's completion or claimed success is not a pass.
+Checks are conventional executable oracles, not adversarially unforgeable proof.
+
+Raw source, session files, provider traces and candidates stay outside Git.
+Results retain actual provider IDs, input/output/cache usage, wall time,
+unfinished phases, checker errors and failures. Native evidence is independently
+checked against the known trace file's hash/size/event count, controller-recorded
+IDs/usage, and the selected model/tool/profile/round/time settings. Missing
+accounting remains null; subscription dollar cost is unknown. Codex output length
+is not capped by its API. Time/round/input limits are disclosed, not called equal
+USD budgets.
+
+**Claim gates remain closed even for a complete matrix.** These are historical
+public tasks with possible training contamination, only three repositories and
+one attempt per arm/phase in each run. Three early Prettier tasks share a source
+revision and overlap; they are not independent samples. A repaired-harness
+replication is a separate development run, not an unseen test set or independent
+repetition. The pilot is neither SWE-bench nor evidence of general coding
+superiority. Broader fresh tasks, repeated runs, independent review of success
+claims, and external developer use remain required.
+See [observed verification](VERIFICATION.md) for executed outcomes and failures.

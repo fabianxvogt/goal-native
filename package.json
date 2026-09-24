@@ -6,9 +6,9 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "check:upstream": "node --input-type=commonjs -e \"const fs=require('fs'); for (const name of ['chord','telemetry','agent','ai','coding-agent']) { const pkg=JSON.parse(fs.readFileSync('upstream/pi/packages/'+name+'/package.json','utf8')); if (pkg.version !== '0.87.1') throw new Error('unsupported upstream '+name+' version: '+pkg.version); }\"",
+    "check:upstream": "node --input-type=commonjs -e \"const fs=require('fs'); for (const name of ['chord','telemetry','tui','agent','ai','coding-agent']) { const pkg=JSON.parse(fs.readFileSync('upstream/pi/packages/'+name+'/package.json','utf8')); if (pkg.version !== '0.87.1') throw new Error('unsupported upstream '+name+' version: '+pkg.version); }\"",
     "build:auth": "npm --prefix upstream/pi exec tsgo -- --noCheck -p upstream/pi/packages/coding-agent/tsconfig.build.json",
     "bootstrap:upstream": "npm --prefix upstream/pi ci --ignore-scripts && npm --prefix upstream/pi run hydrate:model-data && npm run build:upstream",
-    "build:upstream": "npm run check:upstream && npm --prefix upstream/pi run build --workspace=@earendil-works/chord && npm --prefix upstream/pi run build --workspace=@earendil-works/pi-telemetry && npm --prefix upstream/pi run build:offline --workspace=@earendil-works/pi-ai && npm --prefix upstream/pi run build --workspace=@earendil-works/pi-agent-core && npm run build:auth"
+    "build:upstream": "npm run check:upstream && npm --prefix upstream/pi run build --workspace=@earendil-works/chord && npm --prefix upstream/pi run build --workspace=@earendil-works/pi-telemetry && npm --prefix upstream/pi run build --workspace=@earendil-works/pi-tui && npm --prefix upstream/pi run build:offline --workspace=@earendil-works/pi-ai && npm --prefix upstream/pi run build --workspace=@earendil-works/pi-agent-core && npm run build:auth"
   }
 }

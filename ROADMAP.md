@@ -2,7 +2,7 @@
 
 ## Now
 
-**State: session-first CLI with recoverable budget stops and reviewed code delivery.**
+**State: repo-aware coding CLI with isolated Python/TypeScript tools, durable continuation and reviewed code delivery.**
 Classification: `INCREMENTAL / EMPIRICAL` for exercised behavior, not a
 quality, efficiency, novelty or general AI-safety claim.
 
@@ -13,27 +13,37 @@ quality, efficiency, novelty or general AI-safety claim.
   patch/ZIP export. Source divergence and stale reviews fail visibly.
 - Source bootstrap plus `./goal`; doctor checks safe, clean, pinned source and
   real pi imports separately from credentials.
-- [Verification](docs/VERIFICATION.md): 86 application checks, 4 evaluator
-  safeguards, fresh source installation, and live multi-file Luna coding through
-  interruption/restart/changed requirements/export with independent checks.
+- Range reads, bounded discovery/regex, SHA-bound surgical edits and historical
+  task-receipt retrieval; stale work remains qualified, not current evidence.
+- Optional disposable Docker commands and real Python/TypeScript language
+  servers. No host mounts, credentials, default network or privileged fallback.
+- Actual pinned native-pi persisted-session adapter and frozen historical
+  coding-task workflow; independent checks remain separate from worker claims.
+- [Verification](docs/VERIFICATION.md) records actual commands, language queries,
+  process/resource boundaries, live continuation and failures/repairs.
+- Measured coding performance remains weak: the repaired historical matrix had
+  two passing Goal Native phase checks, zero constrained-native-pi passes, and
+  no finished phase. These are development results, not a ranking.
 
 ## Next
 
-1. **Owner dogfooding:** use the complete CLI loop on selected Python projects;
-   assess source-selection and review ergonomics within the documented limits.
+1. **Real-task completion and external developer use:** validate practical,
+   declared limits on fresh work, then complete multi-day Python and TypeScript
+   work including interruption, changed requirements, dependency setup, source
+   selection and reviewed export. Maintainer probes are not this acceptance gate.
 2. **Browser, only after the CLI loop is comfortable:** one composer, session
    list and result view; move goal/evidence/effect forms behind details.
 
 Keep wider provider coverage, goal taxonomies, parallel-agent orchestration
-and new effect adapters out of this UI pass. The native-pi comparison baseline
-and independent lifecycle assessment remain required before efficiency claims,
-not prerequisites for a useful CLI.
+and new effect adapters out of this UI pass. Broader fresh/nonoverlapping coding
+tasks, repeated matched runs, independent success-claim assessment and the
+complete lifecycle comparison remain required before superiority/efficiency claims.
 
 ## Later
 
 - Additional effect adapters only after receiver-side atomicity, operation identity, revocation and recovery contracts are explicit and tested.
 - Parallel implementation only with isolated resource ownership and exact combined-candidate checks.
-- Portable OS isolation only with equivalent bypass tests; never silently fall back to privileged local execution.
+- Validate additional host/engine platforms with equivalent bypass and cleanup probes; the exercised Docker host is macOS arm64, not a claim of universal OS support.
 
 ## Done
 
@@ -80,6 +90,24 @@ not prerequisites for a useful CLI.
 - Independent-review repairs: persisted partial-stream cancellation, explicit
   generated-path artifacts, external-interpreter refusal, shared pi source checks,
   and native credential-path regex enforcement at root and nested paths.
+- Repo-scale file discovery, ranged Unicode reads, bounded regex subprocesses,
+  hash-bound all-or-nothing file edits, and qualified task-receipt continuation.
+- Reviewed Linux Docker image, isolated direct argv/shell/compiler execution,
+  explicit network grant, bounded resources and detached-descendant cleanup.
+- Real Pyright/TypeScript definition, reference and diagnostic queries tied to
+  candidate/image identity; cold TypeScript readiness and Unicode positions fixed.
+- Native-pi SDK sessions using the same controlled tool boundary; actual live
+  cold/changed-request continuation retained real IDs/usage without invented cost.
+- Forty pre-fix/reference checks qualified ten historical tasks across both
+  phases. The first live matrix exposed context-accounting and native
+  pre-admission bugs; its failures remain retained, not relabeled as success.
+- Independent runtime and harness reviews accepted the scoped repairs.
+  118 application checks and four legacy evaluator safeguards passed; actual
+  large-file CLI, cold language navigation, cancellation and process-death
+  probes exercised the repaired paths. Broader quality claims remain closed.
+- Repaired-harness replication completed all 40 phase attempts without bridge
+  or evidence-validation errors. Its poor coding outcomes and both report
+  hashes are retained in verification; no failed first-run row was overwritten.
 
 ## Release record
 

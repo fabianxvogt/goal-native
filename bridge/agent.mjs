@@ -5,16 +5,8 @@ import { AuthStorage } from "../upstream/pi/packages/coding-agent/dist/core/auth
 import { Type, createModels } from "../upstream/pi/packages/ai/dist/index.js";
 import { openaiCodexProvider } from "../upstream/pi/packages/ai/dist/providers/openai-codex.js";
 import { openaiProvider } from "../upstream/pi/packages/ai/dist/providers/openai.js";
+import { declarationsEqual, getCurrentTools } from "../upstream/pi/packages/ai/dist/utils/transcript.js";
 
-const TOOL_NAMES = [
-  "staged_read",
-  "staged_write",
-  "staged_search",
-  "read_artifact",
-  "staged_run",
-  "save_artifact",
-  "finding",
-];
 
 function jsonLine(value) {
   return JSON.stringify(value, (_key, item) => {
@@ -62,10 +54,18 @@ function serializableTools(tools) {
 }
 
 export function serializeContext(context) {
-  return {
-    messages: (context.messages ?? []).map((message) => jsonSafe(message)),
-    tools: serializableTools(context.tools ?? []),
-  };
+  const messages = (context.messages ?? []).map((message) => {
+    if (message.role !== "toolResult") return jsonSafe(message);
+    // These fields belong to UI/tool accounting, not the provider's input.
+    const { details, usage, ...modelMessage } = message;
+    return jsonSafe(modelMessage);
+  });
+  const declared = new Map(getCurrentTools(messages).map((tool) => [tool.name, tool]));
+  const tools = serializableTools(context.tools ?? []).filter((tool) => {
+    const prior = declared.get(tool.name);
+    return !prior || !declarationsEqual(prior, tool);
+  });
+  return { messages, tools };
 }
 
 function jsonSafe(value) {
@@ -83,7 +83,7 @@ function redactText(value) {
   return text;
 }
 
-function sanitizeWire(value) {
+export function sanitizeWire(value) {
   if (Array.isArray(value)) return value.map(sanitizeWire);
   if (!value || typeof value !== "object") return typeof value === "string" ? redactText(value) : value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [
@@ -128,97 +128,20 @@ function toolDefinition(name, label, description, parameters, rpc, metadata) {
   };
 }
 
-export function createControlledTools(rpc, metadata) {
-  const tools = [
-    toolDefinition(
-      "staged_read",
-      "Staged read",
-      "Read UTF-8 text from the staged workspace only.",
-      Type.Object({
-        path: Type.String(),
-        max_bytes: Type.Optional(Type.Integer({ minimum: 1 })),
-      }),
-      rpc,
-      metadata,
-    ),
-    toolDefinition(
-      "staged_write",
-      "Staged write",
-      "Write UTF-8 text to the staged workspace only.",
-      Type.Object({
-        path: Type.String(),
-        content: Type.String(),
-        max_bytes: Type.Optional(Type.Integer({ minimum: 1 })),
-      }),
-      rpc,
-      metadata,
-    ),
-    toolDefinition(
-      "staged_search",
-      "Staged search",
-      "Search staged UTF-8 files for literal text; returns bounded scope and snapshot receipts.",
-      Type.Object({
-        query: Type.String(),
-        path: Type.Optional(Type.String()),
-        max_results: Type.Optional(Type.Integer({ minimum: 1 })),
-      }),
-      rpc,
-      metadata,
-    ),
-    toolDefinition(
-      "read_artifact",
-      "Read artifact",
-      "Read a bounded artifact projection with full provenance and qualifications.",
-      Type.Object({
-        artifact_id: Type.String(),
-        max_chars: Type.Optional(Type.Integer({ minimum: 1 })),
-      }),
-      rpc,
-      metadata,
-    ),
-    toolDefinition(
-      "staged_run",
-      "Staged run",
-      "Run one staged Python script inside enforced OS isolation.",
-      Type.Object({
-        path: Type.String(),
-        args: Type.Optional(Type.Array(Type.String())),
-        timeout_seconds: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
-      }),
-      rpc,
-      metadata,
-    ),
-    toolDefinition(
-      "save_artifact",
-      "Save artifact",
-      "Persist a worker-produced candidate with explicit qualifications.",
-      Type.Object({
-        kind: Type.String(),
-        content: Type.String(),
-        name: Type.Optional(Type.String()),
-        inputs: Type.Optional(Type.Array(Type.String())),
-        limitations: Type.String(),
-      }),
-      rpc,
-      metadata,
-    ),
-    toolDefinition(
-      "finding",
-      "Worker finding",
-      "Record a worker-reported finding as untrusted evidence.",
-      Type.Object({
-        content: Type.String(),
-        limitations: Type.String(),
-        inputs: Type.Optional(Type.Array(Type.String())),
-      }),
-      rpc,
-      metadata,
-    ),
-  ];
-  if (tools.map((tool) => tool.name).join(",") !== TOOL_NAMES.join(",")) {
-    throw new Error("controlled tool loadout changed unexpectedly");
+export function createControlledTools(rpc, metadata, schemas) {
+  if (!Array.isArray(schemas) || schemas.length === 0 || schemas.length > 32) {
+    throw new Error("controller tool schemas are required");
   }
-  return tools;
+  const names = new Set();
+  return schemas.map(({ name, description, parameters }) => {
+    if (typeof name !== "string" || !/^[a-z_]+$/.test(name) || names.has(name)
+        || typeof description !== "string" || parameters?.type !== "object") {
+      throw new Error("invalid or duplicate controller tool schema");
+    }
+    names.add(name);
+    return toolDefinition(name, name.replaceAll("_", " "), description,
+      Type.Unsafe(parameters), rpc, metadata);
+  });
 }
 function resolveModel(modelId, providerId, authFile) {
   if (typeof modelId !== "string" || !modelId.trim()) {
@@ -269,6 +192,7 @@ export function createAgent({
   authFile,
   modelId,
   messages,
+  toolSchemas,
   runId,
   invocationId,
   maxRounds = 12,
@@ -283,7 +207,8 @@ export function createAgent({
   const resolved = suppliedModel ? { model: suppliedModel, models: suppliedModels } : resolveModel(modelId, provider, authFile);
   const model = resolved.model;
   const metadata = { runId, invocationId };
-  const tools = createControlledTools(rpc, metadata);
+  const tools = createControlledTools(rpc, metadata, toolSchemas);
+  const toolNames = new Set(tools.map((tool) => tool.name));
   let rounds = 0;
   const baseStream = streamFn || ((requestModel, context, options = {}) => (
     resolved.models.streamSimple(requestModel, context, options)
@@ -332,7 +257,7 @@ export function createAgent({
     toolExecution: "sequential",
     maxRetryDelayMs: 0,
     beforeToolCall: async ({ toolCall }) => {
-      if (!TOOL_NAMES.includes(toolCall.name)) {
+      if (!toolNames.has(toolCall.name)) {
         return { block: true, reason: `tool is not in the controlled loadout: ${toolCall.name}`, terminate: true };
       }
       return undefined;
@@ -376,7 +301,7 @@ export async function runAgent(options) {
   options.onAgent?.(agent);
   await options.emit?.({
     type: "agent_config",
-    tools: TOOL_NAMES,
+    tools: agent.state.tools.map((tool) => tool.name),
     model: modelSummary(agent.state.model),
     provider_output_limit_supported: agent.state.model.provider !== "openai-codex",
   });
@@ -444,6 +369,7 @@ function startProcess() {
         authFile: request.auth_file,
         modelId: request.model,
         messages: request.messages,
+        toolSchemas: request.tools,
         runId: request.run_id,
         invocationId: request.invocation_id,
         maxRounds: request.max_rounds,

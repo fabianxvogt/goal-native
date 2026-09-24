@@ -338,9 +338,13 @@ def _run_existing(
     stage_root: Path | None = None
     worker: Worker | None = None
     started = False
+    command_runtime: Any | None = None
     stage_manifest: dict[str, Any] = {"source": None, "artifact": None}
     try:
         context_budget = ContextBudget(max_context_tokens=args.context_budget)
+        execution = getattr(args, "execution", "python")
+        if getattr(args, "allow_network", False) and execution != "docker":
+            raise ValueError("--allow-network requires --execution docker")
         run_args = argparse.Namespace(**vars(args))
         if hasattr(run_args, "recovered_stage"):
             delattr(run_args, "recovered_stage")
@@ -367,9 +371,16 @@ def _run_existing(
         os.chmod(stage_root, 0o700)
         with Store(state_root) as store:
             store.goal(goal_id)
-            sandbox = Sandbox(stage_root, timeout=args.max_time, require_os_sandbox=True)
+            sandbox = Sandbox(stage_root, timeout=args.max_time, require_os_sandbox=execution == "python")
             try:
                 stage_manifest = _stage_inputs(store, goal_id, run_args, sandbox, stage_root)
+                if execution == "docker":
+                    from .container_runtime import ContainerRuntime
+
+                    command_runtime = ContainerRuntime(
+                        stage_root, image=args.container_image,
+                        allow_network=args.allow_network, timeout=args.max_time,
+                    )
                 worker = Worker(
                     store,
                     model,
@@ -381,6 +392,7 @@ def _run_existing(
                     provider=args.provider,
                     auth_file=_auth_path(args) if args.provider == "openai-codex" else None,
                     on_event=on_event,
+                    command_runtime=command_runtime,
                 )
                 started = True
                 try:
@@ -396,6 +408,8 @@ def _run_existing(
                                 "model": model, "provider": args.provider,
                                 "context_budget": args.context_budget,
                                 "max_rounds": args.max_rounds, "max_time": args.max_time,
+                                "execution": execution,
+                                "network_allowed": bool(args.allow_network),
                             },
                             result,
                             note="CLI termination report, not goal acceptance; stage paths are local and not exported file contents.",
@@ -424,9 +438,13 @@ def _run_existing(
                         }
                     ) from exc
             finally:
-                sandbox.close()
-                if worker is not None and worker.last_assignment_id is not None:
-                    store.remember_local_stage(worker.last_assignment_id, stage_root.name)
+                try:
+                    if command_runtime is not None:
+                        command_runtime.close()
+                finally:
+                    sandbox.close()
+                    if worker is not None and worker.last_assignment_id is not None:
+                        store.remember_local_stage(worker.last_assignment_id, stage_root.name)
     except CLICancelled:
         raise
     except KeyboardInterrupt as exc:
@@ -534,13 +552,15 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
 
     upstream = project_root / "upstream" / "pi"
     source_status = pi_source_status(project_root, git_path)
-    package_names = ("chord", "telemetry", "agent", "ai", "coding-agent")
+    package_names = ("chord", "telemetry", "tui", "agent", "ai", "coding-agent")
     dist_files = [
         upstream / "packages" / "chord" / "dist" / "index.js",
         upstream / "packages" / "telemetry" / "dist" / "index.js",
+        upstream / "packages" / "tui" / "dist" / "index.js",
         upstream / "packages" / "agent" / "dist" / "index.js",
         upstream / "packages" / "ai" / "dist" / "index.js",
         upstream / "packages" / "coding-agent" / "dist" / "core" / "auth-storage.js",
+        upstream / "packages" / "coding-agent" / "dist" / "core" / "sdk.js",
     ]
     versions: dict[str, str | None] = {}
     for name in package_names:
@@ -560,7 +580,8 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
     if source_status["ok"] and node_ok and pi_built and bridge_ok:
         try:
             probe = subprocess.run(
-                [node_path, "--input-type=module", "-e", "await import('./bridge/agent.mjs')"],
+                [node_path, "--input-type=module", "-e",
+                 "await import('./bridge/agent.mjs'); await import('./upstream/pi/packages/coding-agent/dist/core/sdk.js')"],
                 cwd=project_root, capture_output=True, text=True, timeout=10, check=False,
             )
             pi_importable = probe.returncode == 0
@@ -590,23 +611,38 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
 
     sandbox_ok = False
     sandbox_error = None
-    if sys.platform != "darwin":
-        sandbox_error = "staged execution is supported only on macOS"
-    else:
-        with tempfile.TemporaryDirectory(prefix="goal-native-doctor-") as temporary:
-            try:
-                sandbox = Sandbox(Path(temporary), require_os_sandbox=True)
-                sandbox.close()
-                sandbox_ok = True
-            except (OSError, SandboxError, SandboxUnavailable, ValueError) as exc:
-                sandbox_error = str(exc)
+    execution = getattr(args, "execution", "python")
+    with tempfile.TemporaryDirectory(prefix="goal-native-doctor-") as temporary:
+        try:
+            sandbox = Sandbox(Path(temporary), require_os_sandbox=execution == "python")
+            sandbox.close()
+            if execution == "docker":
+                from .container_runtime import ContainerRuntime
+
+                runtime = ContainerRuntime(
+                    sandbox.root, image=args.container_image,
+                    allow_network=args.allow_network,
+                )
+                runtime.close()
+            elif getattr(args, "allow_network", False):
+                raise ValueError("--allow-network requires --execution docker")
+            sandbox_ok = True
+        except (OSError, SandboxError, SandboxUnavailable, ValueError, RuntimeError) as exc:
+            sandbox_error = str(exc)
     checks["sandbox"] = {
         "ok": sandbox_ok,
-        "macos_enforcement": sandbox_ok,
+        "execution": execution,
+        "macos_enforcement": sandbox_ok and execution == "python",
+        "network_allowed": bool(getattr(args, "allow_network", False)) and execution == "docker",
         "platform": sys.platform,
         **({"error": sandbox_error} if sandbox_error else {}),
         **(
-            {"remediation": "run on macOS with the staged execution support available"}
+            {"remediation": (
+                "start a local Linux Docker engine and build the runtime image: "
+                "docker build -t goal-native-runtime:local runtime"
+                if execution == "docker"
+                else "run on macOS with the staged execution support available"
+            )}
             if not sandbox_ok
             else {}
         ),
@@ -1076,7 +1112,11 @@ class _RunDisplay:
             label = {
                 "staged_read": "Reading files…", "staged_write": "Writing files…",
                 "staged_search": "Searching files…", "staged_run": "Running Python…",
+                "staged_files": "Listing files…", "staged_regex": "Searching code…",
+                "staged_edit": "Editing code…", "staged_command": "Running isolated command…",
+                "staged_language": "Inspecting symbols…",
                 "read_artifact": "Reading saved work…", "save_artifact": "Saving work…",
+                "read_receipt": "Reading previous observations…",
                 "finding": "Saving a finding…",
             }.get(event.get("toolName"), "Using a tool…")
             self._status(label)
@@ -1131,6 +1171,11 @@ def _chat_status(state: str, goal_id: str, args: argparse.Namespace | None = Non
     seconds = limits.get("max_time") if isinstance(limits, dict) else (args.max_time if args else "unknown")
     used_rounds = run.get("rounds") if isinstance(run, dict) else None
     print(_terminal_text(f"Limits   rounds {used_rounds if used_rounds is not None else 'unknown'} / {rounds} · time {seconds}s"))
+    if isinstance(limits, dict) and limits.get("execution"):
+        print(_terminal_text(
+            f"Runtime  {limits['execution']} · network "
+            f"{'explicitly permitted' if limits.get('network_allowed') else 'denied'}"
+        ))
     print(_terminal_text(f"Goal     {summary['goal_status']} · run completion is not acceptance"))
     if stage:
         print(_terminal_text(f"Files    {stage}"))
@@ -1143,6 +1188,8 @@ def _chat(args: argparse.Namespace) -> int:
     if not args.model:
         raise ValueError("--provider openai requires an explicit --model")
     ContextBudget(max_context_tokens=args.context_budget)
+    if args.allow_network and args.execution != "docker":
+        raise ValueError("--allow-network requires --execution docker")
     # Readline adds local editing/history without a dependency or a history file.
     try:
         import readline
@@ -1150,6 +1197,11 @@ def _chat(args: argparse.Namespace) -> int:
         pass
 
     print(_terminal_text(f"\nGoal Native  /  {args.model}  /  {args.provider}"))
+    if args.execution == "docker":
+        print(_terminal_text(
+            f"Isolated containers  /  {args.container_image}  /  network "
+            f"{'permitted when requested' if args.allow_network else 'denied'}"
+        ))
     print("New session. Just type a request; goals are saved automatically.")
     print("/new  /sessions  /resume <number or id>  /status  /changes  /diff  /help  /exit\n")
     goal_id: str | None = None
@@ -1337,9 +1389,25 @@ def _add_provider_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY", help="used only with --provider openai")
 
 
+def _add_execution_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--execution", choices=("python", "docker"), default="python",
+        help="restricted macOS Python (default), or disposable isolated repository commands",
+    )
+    parser.add_argument(
+        "--container-image", default="goal-native-runtime:local",
+        help="existing local runtime image, resolved to an immutable ID; never pulled automatically",
+    )
+    parser.add_argument(
+        "--allow-network", action="store_true",
+        help="permit command-requested container network egress; selected sources may leave the machine",
+    )
+
+
 def _add_worker_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", help="explicit provider model id")
     _add_provider_options(parser)
+    _add_execution_options(parser)
     parser.add_argument("--max-rounds", type=_positive_int, default=12)
     parser.add_argument("--max-time", type=_positive_float, default=300.0, dest="max_time")
     parser.add_argument(
@@ -1502,6 +1570,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_state_option(doctor)
     doctor.add_argument("--model")
     _add_provider_options(doctor)
+    _add_execution_options(doctor)
 
     serve = subparsers.add_parser("serve", help="lazily start the optional localhost browser interface")
     _add_state_option(serve)

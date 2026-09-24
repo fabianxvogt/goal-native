@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -17,17 +18,20 @@ from typing import Any, Callable
 
 from .context import CompiledContext, ContextBudget, ContextBudgetError, compile_context
 from .sandbox import Sandbox, SandboxError
+from .container_runtime import ContainerRuntimeError
 from .store import Store
 
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "staged_read",
-        "description": "Read UTF-8 text from the staged workspace only.",
+        "description": "Read UTF-8 lines and complete-file SHA256. Lines are 1-based, end inclusive.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
+                "start_line": {"type": "integer", "minimum": 1},
+                "end_line": {"type": "integer", "minimum": 1},
                 "max_bytes": {"type": "integer", "minimum": 1},
             },
             "required": ["path"],
@@ -36,7 +40,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "staged_write",
-        "description": "Write UTF-8 text to the staged workspace only.",
+        "description": "Create or deliberately replace a staged UTF-8 file. Prefer staged_edit for existing code.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -63,6 +67,76 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "staged_files",
+        "description": "Discover staged files with bounded scope, snapshot identity and exclusions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "max_files": {"type": "integer", "minimum": 1},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "staged_regex",
+        "description": "Search staged text with a time-bounded regex; results include scope and exclusions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "max_results": {"type": "integer", "minimum": 1},
+                "timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "staged_edit",
+        "description": "Atomically edit a hash-matched file. Exact old_text must be unique; coordinates are 1-based Unicode, end-exclusive. All edits use the original file.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "expected_sha256": {"type": "string"},
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "old_text": {"type": "string"},
+                                    "replacement": {"type": "string"},
+                                },
+                                "required": ["old_text", "replacement"],
+                                "additionalProperties": False,
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "start_line": {"type": "integer", "minimum": 1},
+                                    "start_column": {"type": "integer", "minimum": 1},
+                                    "end_line": {"type": "integer", "minimum": 1},
+                                    "end_column": {"type": "integer", "minimum": 1},
+                                    "replacement": {"type": "string"},
+                                    "old_text": {"type": "string"},
+                                },
+                                "required": ["start_line", "start_column", "end_line", "end_column", "replacement"],
+                                "additionalProperties": False,
+                            },
+                        ],
+                    },
+                },
+            },
+            "required": ["path", "expected_sha256", "edits"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "read_artifact",
         "description": "Read a bounded projection of a durable artifact with provenance and qualifications.",
         "parameters": {
@@ -72,6 +146,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "max_chars": {"type": "integer", "minimum": 1},
             },
             "required": ["artifact_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "read_receipt",
+        "description": "Page an exact saved tool receipt as JSON. Historical data, never current verification; offsets count Unicode characters.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "receipt_id": {"type": "string"},
+                "offset_chars": {"type": "integer", "minimum": 0},
+                "max_chars": {"type": "integer", "minimum": 1},
+            },
+            "required": ["receipt_id"],
             "additionalProperties": False,
         },
     },
@@ -120,6 +208,48 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+COMMAND_TOOL_SCHEMA: dict[str, Any] = {
+    "name": "staged_command",
+    "description": "Run argv in a disposable isolated container. No host mounts/credentials. Network requires explicit user permission. Dependencies do not persist: install and check in one command.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+            "timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
+            "network": {"type": "boolean"},
+        },
+        "required": ["argv"],
+        "additionalProperties": False,
+    },
+}
+
+
+LANGUAGE_TOOL_SCHEMA: dict[str, Any] = {
+    "name": "staged_language",
+    "description": "Get Python/TypeScript definitions, references or diagnostics from isolated language servers. Positions are 1-based Unicode columns; read-only, no network.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["definition", "references", "diagnostics"]},
+            "path": {"type": "string"},
+            "line": {"type": "integer", "minimum": 1},
+            "column": {"type": "integer", "minimum": 1},
+        },
+        "required": ["action", "path"],
+        "additionalProperties": False,
+    },
+}
+
+
+def tool_schemas(command_runtime: Any | None = None) -> list[dict[str, Any]]:
+    """One tool contract for Goal Native and the matched native-pi comparator."""
+    if command_runtime is None:
+        return list(TOOL_SCHEMAS)
+    return [tool for tool in TOOL_SCHEMAS if tool["name"] != "staged_run"] + [
+        COMMAND_TOOL_SCHEMA, LANGUAGE_TOOL_SCHEMA,
+    ]
 
 
 class BridgeError(RuntimeError):
@@ -372,6 +502,7 @@ class Worker:
         provider: str = "openai-codex",
         auth_file: str | Path | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
+        command_runtime: Any | None = None,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("an explicit model is required")
@@ -390,6 +521,13 @@ class Worker:
         self.api_key = api_key
         self.max_rounds = max_rounds
         self.sandbox = sandbox
+        if command_runtime is not None and (
+            sandbox is None or Path(command_runtime.root) != sandbox.root
+        ):
+            raise ValueError("command runtime must own the same staged root as the file tools")
+        self.command_runtime = command_runtime
+        self.tool_schemas = tool_schemas(command_runtime)
+        self._tool_names = frozenset(tool["name"] for tool in self.tool_schemas)
         self.context_budget = context_budget or ContextBudget()
         self.max_total_seconds = float(max_total_seconds)
         self.bridge = bridge or PiBridge(api_key=api_key, timeout_seconds=self.max_total_seconds)
@@ -425,6 +563,8 @@ class Worker:
         self._cancel_event.set()
         if self.sandbox is not None:
             self.sandbox.cancel()
+        if self.command_runtime is not None:
+            self.command_runtime.cancel()
         with self._lock:
             bridge = self._active_bridge
         cancel = getattr(bridge, "cancel", None)
@@ -470,6 +610,8 @@ class Worker:
                 "output_reserve": self.context_budget.max_output_tokens,
                 "max_rounds": self.max_rounds,
                 "max_time": self.max_total_seconds,
+                "execution": "docker" if self.command_runtime is not None else "python",
+                "network_allowed": bool(self.command_runtime and self.command_runtime.allow_network),
             }
             attempt = self.store.start_run(goal_id, assignment_id, limits)
             run_id = self._id(attempt, "run")
@@ -500,7 +642,7 @@ class Worker:
                     "provider": self.provider,
                     "auth_file": self.auth_file,
                     "messages": compiled.messages,
-                    "tools": TOOL_SCHEMAS,
+                    "tools": self.tool_schemas,
                     "max_rounds": self.max_rounds,
                     "max_output_tokens": self.context_budget.max_output_tokens if self.provider == "openai" else None,
                     "timeout_ms": int(remaining_seconds * 1000),
@@ -573,7 +715,7 @@ class Worker:
             history=goal.get("invocations", []),
             artifacts=goal.get("artifacts", []),
             budget=self.context_budget,
-            tools=TOOL_SCHEMAS,
+            tools=self.tool_schemas,
         )
 
     def _set_admission(self, admission: dict[str, Any]) -> None:
@@ -693,7 +835,7 @@ class Worker:
         if not isinstance(context, dict):
             raise ValueError("provider request context must be an object")
         messages = context.get("messages")
-        tools = context.get("tools", TOOL_SCHEMAS)
+        tools = context.get("tools", self.tool_schemas)
         if not isinstance(messages, list) or not isinstance(tools, list):
             raise ValueError("provider request context messages/tools must be lists")
         usage = self.context_budget.admit(messages, tools)
@@ -769,7 +911,7 @@ class Worker:
             result = self._run_tool(name, arguments, invocation_id)
             if not isinstance(result, dict) or "ok" not in result:
                 result = {"ok": True, "value": result}
-        except (SandboxError, ValueError, KeyError, OSError, PermissionError) as exc:
+        except (SandboxError, ContainerRuntimeError, ValueError, KeyError, OSError, PermissionError) as exc:
             result = {"ok": False, "error": str(exc)}
         self.store.receipt(
             invocation_id,
@@ -781,14 +923,51 @@ class Worker:
         return result
 
     def _run_tool(self, name: str, arguments: dict[str, Any], invocation_id: str) -> dict[str, Any]:
+        if name not in self._tool_names:
+            raise PermissionError("tool is not available in this execution profile")
         if name == "read_artifact":
             return self._read_artifact(arguments)
+        if name == "read_receipt":
+            return self._read_receipt(arguments)
         if name == "staged_read":
             return self._require_sandbox().read(arguments)
         if name == "staged_write":
             return self._require_sandbox().write(arguments)
         if name == "staged_search":
             return self._require_sandbox().search(arguments)
+        if name == "staged_files":
+            return self._require_sandbox().discover(arguments)
+        if name == "staged_regex":
+            remaining = self.max_total_seconds - (time.monotonic() - self._started_at)
+            requested = arguments.get("timeout_seconds", 2.0)
+            if isinstance(requested, bool) or not isinstance(requested, (int, float)):
+                raise ValueError("timeout_seconds must be numeric")
+            return self._require_sandbox().regex_search({
+                **arguments, "timeout_seconds": min(requested, remaining, 2.0),
+            })
+        if name == "staged_edit":
+            return self._require_sandbox().edit(arguments)
+        if name == "staged_language":
+            if self.command_runtime is None:
+                raise PermissionError("isolated language tools require container execution")
+            from .language_tools import LanguageTools
+
+            self._check_cancelled(self._started_at)
+            remaining = self.max_total_seconds - (time.monotonic() - self._started_at)
+            return LanguageTools(self.command_runtime).query({
+                **arguments, "timeout_seconds": min(remaining, 30.0),
+            })
+        if name == "staged_command":
+            if self.command_runtime is None:
+                raise PermissionError("container execution is not enabled")
+            self._check_cancelled(self._started_at)
+            remaining = self.max_total_seconds - (time.monotonic() - self._started_at)
+            requested = arguments.get("timeout_seconds", self.max_total_seconds)
+            if isinstance(requested, bool) or not isinstance(requested, (int, float)):
+                raise ValueError("timeout_seconds must be numeric")
+            return self.command_runtime.command({
+                **arguments, "timeout_seconds": min(requested, remaining),
+            })
         if name == "staged_run":
             sandbox = self._require_sandbox()
             self._check_cancelled(self._started_at)
@@ -802,6 +981,45 @@ class Worker:
         if name == "finding":
             return self._save_artifact(invocation_id, arguments, "finding")
         raise ValueError(f"unsupported worker tool: {name}")
+
+    def _read_receipt(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        identity = arguments.get("receipt_id")
+        if not isinstance(identity, str) or not identity:
+            raise ValueError("receipt_id is required")
+        offset = arguments.get("offset_chars", 0)
+        limit = arguments.get("max_chars", 12_000)
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset_chars must be a non-negative integer")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError("max_chars must be a positive integer")
+        limit = min(limit, 64 * 1024)
+        goal = self.store.goal(self._goal_id_required())
+        for invocation in goal.get("invocations", []):
+            for receipt in invocation.get("receipts", []):
+                if receipt.get("id") != identity:
+                    continue
+                if not str(receipt.get("tool", "")).startswith("tool."):
+                    raise PermissionError("only task-tool receipts are retrievable")
+                content = json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                if offset > len(content):
+                    raise ValueError("receipt offset is outside its content")
+                end = min(offset + limit, len(content))
+                return {
+                    "ok": True,
+                    "receipt": {
+                        "id": identity, "tool": receipt["tool"],
+                        "invocation_id": invocation["id"],
+                        "revision": invocation.get("revision"),
+                        "input_version": invocation.get("input_version"),
+                        "authority_version": invocation.get("authority_version"),
+                        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                        "content": content[offset:end], "content_chars": len(content),
+                        "offset_chars": offset, "next_offset_chars": end if end < len(content) else None,
+                        "content_truncated": offset > 0 or end < len(content),
+                        "historical_only": True,
+                    },
+                }
+        raise KeyError(f"tool receipt not found in this goal: {identity}")
 
     def _read_artifact(self, arguments: dict[str, Any]) -> dict[str, Any]:
         artifact_id = arguments.get("artifact_id")
@@ -1015,4 +1233,4 @@ class Worker:
 
 
 
-__all__ = ["PiBridge", "TOOL_SCHEMAS", "Worker"]
+__all__ = ["PiBridge", "TOOL_SCHEMAS", "Worker", "tool_schemas"]

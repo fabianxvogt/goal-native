@@ -1,8 +1,9 @@
 """Staged file tools and fail-closed macOS process isolation.
 
 The direct file tools use a pinned root directory descriptor and no-follow
-``openat``-style traversal.  Search is deliberately bounded literal search,
-not controller-side regular-expression evaluation.  Code runs only under
+``openat``-style traversal.  Literal search and file discovery are deliberately
+bounded; regular-expression search runs in a killable helper rather than
+evaluating an untrusted expression in the controller.  Code runs only under
 macOS ``sandbox-exec``; the profile denies process creation and allows exec
 only for the configured Python interpreter.  Consequently sandboxed Python
 cannot launch shells, subprocesses, or detached children.  There is no
@@ -17,6 +18,7 @@ import json
 import math
 import os
 import re
+import secrets
 import selectors
 import signal
 import stat
@@ -65,6 +67,10 @@ _MAX_PATH_CHARS = 4096
 _MAX_RUN_ARGS = 64
 _MAX_RUN_ARGUMENT_CHARS = 4096
 _MAX_RUN_ARGUMENT_BYTES = 16 * 1024
+_DEFAULT_REGEX_TIMEOUT = 1.0
+_MAX_REGEX_TIMEOUT = 10.0
+_MAX_EDIT_COUNT = 128
+_MAX_EDIT_BYTES = 1 * 1024 * 1024
 _PYTHON_RUNNER = """
 import os, sys
 descriptor_path, __file__ = sys.argv[1:3]
@@ -73,6 +79,53 @@ sys.path[:0] = list(dict.fromkeys([os.path.dirname(__file__), os.getcwd()]))
 with open(descriptor_path, "rb") as source:
     code = compile(source.read(), __file__, "exec")
 exec(code, globals())
+"""
+
+_REGEX_HELPER = r"""
+import json
+import re
+import signal
+import sys
+
+def _main():
+    request = json.load(sys.stdin)
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.setitimer(signal.ITIMER_REAL, request["timeout_seconds"])
+    try:
+        expression = re.compile(request["pattern"])
+    except re.error as exc:
+        print(json.dumps({"ok": False, "kind": "invalid_pattern", "error": str(exc)}))
+        return
+    matches = []
+    truncated = False
+    for item in request["files"]:
+        for line_number, line in enumerate(item["text"].splitlines(), 1):
+            found = expression.search(line)
+            if found is None:
+                continue
+            shown = line[:request["max_match_text_chars"]]
+            match_text = found.group(0)
+            match_shown = match_text[:request["max_match_text_chars"]]
+            result = {
+                "path": item["path"],
+                "line": line_number,
+                "text": shown,
+                "match": match_shown,
+            }
+            if len(shown) < len(line):
+                result["text_truncated"] = True
+            if len(match_shown) < len(match_text):
+                result["match_truncated"] = True
+            matches.append(result)
+            if len(matches) >= request["max_results"]:
+                truncated = True
+                break
+        if truncated:
+            break
+    print(json.dumps({"ok": True, "matches": matches, "truncated": truncated}))
+
+if __name__ == "__main__":
+    _main()
 """
 
 
@@ -257,6 +310,15 @@ class Sandbox:
     def read(self, arguments: dict[str, Any]) -> dict[str, Any]:
         parts = self._parts(arguments.get("path"))
         limit = self._bounded_limit(arguments.get("max_bytes"), _DEFAULT_FILE_LIMIT)
+        start_line = self._line_limit(arguments.get("start_line"), 1)
+        requested_end = arguments.get("end_line")
+        end_line = (
+            self._line_limit(requested_end, 1)
+            if requested_end is not None
+            else None
+        )
+        if end_line is not None and end_line < start_line:
+            raise ValueError("end_line must not precede start_line")
         parent_fd = self._open_directory(parts[:-1])
         fd = -1
         try:
@@ -270,10 +332,36 @@ class Sandbox:
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             raise
+        lines = text.splitlines(keepends=True)
+        line_count = len(lines)
+        selected_end = line_count
+        if end_line is not None:
+            selected_end = min(end_line, line_count)
+        if start_line <= line_count:
+            selected = "".join(lines[start_line - 1 : selected_end])
+        else:
+            selected = ""
+        file_hash = hashlib.sha256(content).hexdigest()
+        continuation = None
+        if selected_end < line_count:
+            continuation = {
+                "path": self._relative_parts(parts),
+                "start_line": selected_end + 1,
+                "sha256": file_hash,
+            }
         return {
             "path": self._relative_parts(parts),
-            "content": text,
-            "bytes": len(content),
+            "content": selected,
+            "bytes": len(selected.encode("utf-8")),
+            "sha256": file_hash,
+            "file_bytes": len(content),
+            "line_count": line_count,
+            "range": {
+                "start_line": start_line,
+                "end_line": selected_end,
+            },
+            "truncated": bool(start_line > 1 or selected_end < line_count),
+            "continuation": continuation,
         }
 
     def write(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -311,6 +399,224 @@ class Sandbox:
             os.close(parent_fd)
         return {"path": self._relative_parts(parts), "bytes": len(data), "written": True}
 
+    def edit(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        parts = self._parts(arguments.get("path"))
+        expected = arguments.get("expected_sha256")
+        if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+            raise ValueError("expected_sha256 must be a 64-character SHA256 hex digest")
+        expected = expected.lower()
+        edits = arguments.get("edits")
+        if not isinstance(edits, list) or not edits:
+            raise ValueError("edits must be a non-empty list")
+        if len(edits) > _MAX_EDIT_COUNT:
+            raise SandboxError("too many edits")
+        limit = self._bounded_limit(arguments.get("max_bytes"), _DEFAULT_FILE_LIMIT)
+        parent_fd = self._open_directory(parts[:-1])
+        source_fd = -1
+        temporary_fd = -1
+        temporary_name: str | None = None
+        try:
+            source_fd = self._open_regular(parent_fd, parts[-1], os.O_RDONLY)
+            original_stat = os.fstat(source_fd)
+            original_bytes = self._read_fd(source_fd, limit)
+            original_hash = hashlib.sha256(original_bytes).hexdigest()
+            if original_hash != expected:
+                raise SandboxError("staged edit is stale: expected_sha256 does not match")
+            original_text = original_bytes.decode("utf-8")
+            spans: list[tuple[int, int, str]] = []
+            replacement_bytes = 0
+            anchor_bytes = 0
+            for edit in edits:
+                if not isinstance(edit, dict):
+                    raise ValueError("each edit must be an object")
+                replacement = edit.get("replacement")
+                if not isinstance(replacement, str):
+                    raise ValueError("edit replacement must be text")
+                try:
+                    replacement_bytes += len(replacement.encode("utf-8"))
+                except UnicodeEncodeError as exc:
+                    raise ValueError("edit replacement must be valid UTF-8") from exc
+                if replacement_bytes > _MAX_EDIT_BYTES:
+                    raise SandboxError("edit replacements exceed the size limit")
+                old_text = edit.get("old_text")
+                if old_text is not None and not isinstance(old_text, str):
+                    raise ValueError("edit old_text must be text")
+                if old_text is not None:
+                    try:
+                        anchor_bytes += len(old_text.encode("utf-8"))
+                    except UnicodeEncodeError as exc:
+                        raise ValueError("edit old_text must be valid UTF-8") from exc
+                    if anchor_bytes > _MAX_EDIT_BYTES:
+                        raise SandboxError("edit anchors exceed the size limit")
+                position_keys = (
+                    "start_line",
+                    "start_column",
+                    "end_line",
+                    "end_column",
+                )
+                has_positions = any(key in edit for key in position_keys)
+                if has_positions:
+                    if not all(key in edit for key in position_keys):
+                        raise ValueError("position edits require all line and column fields")
+                    start = self._text_position(
+                        original_text,
+                        edit["start_line"],
+                        edit["start_column"],
+                    )
+                    end = self._text_position(
+                        original_text,
+                        edit["end_line"],
+                        edit["end_column"],
+                    )
+                    if end < start:
+                        raise ValueError("edit end must not precede start")
+                    selected = original_text[start:end]
+                    if old_text is not None and selected != old_text:
+                        raise SandboxError("edit old_text does not match the requested range")
+                else:
+                    if not isinstance(old_text, str) or not old_text:
+                        raise ValueError(
+                            "an edit requires positions or non-empty old_text"
+                        )
+                    start = original_text.find(old_text)
+                    if start < 0:
+                        raise SandboxError("edit old_text was not found")
+                    if original_text.find(old_text, start + 1) >= 0:
+                        raise SandboxError("edit old_text is ambiguous")
+                    end = start + len(old_text)
+                spans.append((start, end, replacement))
+
+            ordered = sorted(spans, key=lambda item: (item[0], item[1]))
+            for previous, current in zip(ordered, ordered[1:]):
+                previous_start, previous_end, _ = previous
+                current_start, _, _ = current
+                if current_start < previous_end or (
+                    current_start == previous_start
+                    and current_start == previous_end
+                ):
+                    raise SandboxError("edits overlap")
+            output_parts: list[str] = []
+            cursor = len(original_text)
+            for start, end, replacement in reversed(ordered):
+                output_parts.append(original_text[end:cursor])
+                output_parts.append(replacement)
+                cursor = start
+            output_parts.append(original_text[:cursor])
+            output_text = "".join(reversed(output_parts))
+            output_bytes = output_text.encode("utf-8")
+            if len(output_bytes) > limit:
+                raise SandboxError(f"staged edit exceeds limit: > {limit}")
+
+            os.lseek(source_fd, 0, os.SEEK_SET)
+            verification_bytes = self._read_fd(source_fd, limit)
+            verification_stat = os.fstat(source_fd)
+            if (
+                hashlib.sha256(verification_bytes).hexdigest() != expected
+                or verification_stat.st_dev != original_stat.st_dev
+                or verification_stat.st_ino != original_stat.st_ino
+                or verification_stat.st_size != original_stat.st_size
+                or verification_stat.st_mtime_ns != original_stat.st_mtime_ns
+            ):
+                raise SandboxError("staged edit source changed during editing")
+            try:
+                path_stat = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise SandboxError("staged edit source path changed during editing") from exc
+            if (
+                not stat.S_ISREG(path_stat.st_mode)
+                or path_stat.st_dev != original_stat.st_dev
+                or path_stat.st_ino != original_stat.st_ino
+                or path_stat.st_size != original_stat.st_size
+                or path_stat.st_mtime_ns != original_stat.st_mtime_ns
+            ):
+                raise SandboxError("staged edit source path changed during editing")
+
+            for _ in range(8):
+                temporary_name = (
+                    f".__goal_native_edit_{os.getpid()}_{secrets.token_hex(8)}"
+                )
+                try:
+                    temporary_fd = os.open(
+                        temporary_name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        stat.S_IMODE(original_stat.st_mode),
+                        dir_fd=parent_fd,
+                    )
+                    break
+                except FileExistsError:
+                    temporary_name = None
+            if temporary_fd == -1 or temporary_name is None:
+                raise SandboxError("could not allocate an atomic edit file")
+            offset = 0
+            while offset < len(output_bytes):
+                written = os.write(temporary_fd, output_bytes[offset:])
+                if written <= 0:
+                    raise OSError("staged edit made no progress")
+                offset += written
+            os.fsync(temporary_fd)
+            os.lseek(source_fd, 0, os.SEEK_SET)
+            final_bytes = self._read_fd(source_fd, limit)
+            final_stat = os.fstat(source_fd)
+            try:
+                final_path_stat = os.stat(
+                    parts[-1], dir_fd=parent_fd, follow_symlinks=False
+                )
+            except OSError as exc:
+                raise SandboxError("staged edit source path changed during editing") from exc
+            if (
+                hashlib.sha256(final_bytes).hexdigest() != expected
+                or final_stat.st_dev != original_stat.st_dev
+                or final_stat.st_ino != original_stat.st_ino
+                or final_stat.st_size != original_stat.st_size
+                or final_stat.st_mtime_ns != original_stat.st_mtime_ns
+                or not stat.S_ISREG(final_path_stat.st_mode)
+                or final_path_stat.st_dev != original_stat.st_dev
+                or final_path_stat.st_ino != original_stat.st_ino
+                or final_path_stat.st_size != original_stat.st_size
+                or final_path_stat.st_mtime_ns != original_stat.st_mtime_ns
+            ):
+                raise SandboxError("staged edit source changed before replacement")
+            os.close(temporary_fd)
+            temporary_fd = -1
+            os.replace(
+                temporary_name,
+                parts[-1],
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            temporary_name = None
+            try:
+                os.fsync(parent_fd)
+            except OSError:
+                pass
+            new_hash = hashlib.sha256(output_bytes).hexdigest()
+            return {
+                "path": self._relative_parts(parts),
+                "previous_sha256": expected,
+                "sha256": new_hash,
+                "bytes": len(output_bytes),
+                "edits": len(spans),
+                "written": True,
+            }
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise SandboxError("staged edit target is not a safe regular file") from exc
+            raise
+        finally:
+            if temporary_fd != -1:
+                try:
+                    os.close(temporary_fd)
+                except OSError:
+                    pass
+            if temporary_name is not None:
+                try:
+                    os.unlink(temporary_name, dir_fd=parent_fd)
+                except OSError:
+                    pass
+            if source_fd != -1:
+                os.close(source_fd)
+            os.close(parent_fd)
+
     def search(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = arguments.get("query", arguments.get("pattern"))
         if not isinstance(query, str) or not query:
@@ -321,6 +627,9 @@ class Sandbox:
         scope_parts = self._parts(arguments.get("path", "."), allow_root=True)
         max_results = self._bounded_limit(arguments.get("max_results"), 100)
         max_files = self._bounded_limit(arguments.get("max_files"), _DEFAULT_SEARCH_FILES)
+        max_entries = self._bounded_limit(
+            arguments.get("max_entries"), _DEFAULT_SEARCH_ENTRIES
+        )
         max_scan_bytes = self._bounded_limit(
             arguments.get("max_scan_bytes"), _DEFAULT_SEARCH_BYTES
         )
@@ -362,6 +671,7 @@ class Sandbox:
                 max_files=max_files,
                 max_scan_bytes=max_scan_bytes,
                 max_file_bytes=max_file_bytes,
+                max_entries=max_entries,
             )
             matches: list[dict[str, Any]] = []
             for relative, fd, _ in files:
@@ -410,6 +720,211 @@ class Sandbox:
                 "literal": True,
                 "max_results": max_results,
                 "max_files": max_files,
+                "max_scan_bytes": max_scan_bytes,
+                "max_file_bytes": max_file_bytes,
+                "max_entries": max_entries,
+            },
+            "snapshot": {
+                "kind": "opened-file-manifest",
+                "id": snapshot_hash.hexdigest(),
+                "files": len(files),
+                "bytes": state["scan_bytes"],
+                "entries": state["entries"],
+                "truncated": bool(state["truncated"]),
+            },
+            "exclusions": exclusions,
+        }
+
+    def discover(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        scope_parts = self._parts(arguments.get("path", "."), allow_root=True)
+        max_files = self._bounded_limit(arguments.get("max_files"), _DEFAULT_SEARCH_FILES)
+        max_entries = self._bounded_limit(
+            arguments.get("max_entries"), _DEFAULT_SEARCH_ENTRIES
+        )
+        max_scan_bytes = self._bounded_limit(
+            arguments.get("max_scan_bytes"), _DEFAULT_SEARCH_BYTES
+        )
+        max_file_bytes = self._bounded_limit(
+            arguments.get("max_file_bytes"), _DEFAULT_FILE_LIMIT
+        )
+        exclusions = {
+            "blocked": 0,
+            "symlinks": 0,
+            "non_regular": 0,
+            "depth": 0,
+            "entry_limit": 0,
+            "file_limit": 0,
+            "file_size_limit": 0,
+            "scan_bytes_limit": 0,
+            "races": 0,
+            "errors": 0,
+        }
+        snapshot_hash = hashlib.sha256()
+        files: list[tuple[str, int, int]] = []
+        state = {"entries": 0, "scan_bytes": 0, "truncated": False}
+        start_fd = self._open_directory(scope_parts)
+        try:
+            self._snapshot_directory(
+                start_fd,
+                "",
+                0,
+                files,
+                snapshot_hash,
+                exclusions,
+                state,
+                max_files=max_files,
+                max_scan_bytes=max_scan_bytes,
+                max_file_bytes=max_file_bytes,
+                max_entries=max_entries,
+            )
+        finally:
+            for _, fd, _ in files:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            os.close(start_fd)
+        return {
+            "path": self._relative_parts(scope_parts),
+            "files": [
+                {"path": relative, "bytes": size}
+                for relative, _, size in files
+            ],
+            "truncated": bool(state["truncated"]),
+            "scope": {
+                "path": self._relative_parts(scope_parts),
+                "max_files": max_files,
+                "max_entries": max_entries,
+                "max_scan_bytes": max_scan_bytes,
+                "max_file_bytes": max_file_bytes,
+            },
+            "snapshot": {
+                "kind": "opened-file-manifest",
+                "id": snapshot_hash.hexdigest(),
+                "files": len(files),
+                "bytes": state["scan_bytes"],
+                "entries": state["entries"],
+                "truncated": bool(state["truncated"]),
+            },
+            "exclusions": exclusions,
+        }
+
+    def regex_search(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        pattern = arguments.get("pattern")
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError("staged regex pattern is required")
+        if len(pattern.encode("utf-8")) > _MAX_QUERY_BYTES:
+            raise SandboxError("staged regex pattern exceeds the search limit")
+        timeout_value = arguments.get("timeout_seconds", _DEFAULT_REGEX_TIMEOUT)
+        if isinstance(timeout_value, bool) or not isinstance(timeout_value, (int, float)):
+            raise ValueError("regex timeout must be positive and bounded")
+        try:
+            timeout = float(timeout_value)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError("regex timeout must be positive and bounded") from exc
+        if (
+            not math.isfinite(timeout)
+            or timeout <= 0
+            or timeout > _MAX_REGEX_TIMEOUT
+        ):
+            raise ValueError("regex timeout must be positive and bounded")
+        scope_parts = self._parts(arguments.get("path", "."), allow_root=True)
+        max_results = self._bounded_limit(arguments.get("max_results"), 100)
+        max_files = self._bounded_limit(arguments.get("max_files"), _DEFAULT_SEARCH_FILES)
+        max_entries = self._bounded_limit(
+            arguments.get("max_entries"), _DEFAULT_SEARCH_ENTRIES
+        )
+        max_scan_bytes = self._bounded_limit(
+            arguments.get("max_scan_bytes"), _DEFAULT_SEARCH_BYTES
+        )
+        max_file_bytes = self._bounded_limit(
+            arguments.get("max_file_bytes"), _DEFAULT_FILE_LIMIT
+        )
+        exclusions = {
+            "blocked": 0,
+            "symlinks": 0,
+            "non_regular": 0,
+            "depth": 0,
+            "entry_limit": 0,
+            "file_limit": 0,
+            "file_size_limit": 0,
+            "scan_bytes_limit": 0,
+            "races": 0,
+            "errors": 0,
+            "invalid_utf8": 0,
+            "result_limit": 0,
+        }
+        snapshot_hash = hashlib.sha256()
+        files: list[tuple[str, int, int]] = []
+        state = {"entries": 0, "scan_bytes": 0, "truncated": False}
+        start_fd = self._open_directory(scope_parts)
+        try:
+            self._snapshot_directory(
+                start_fd,
+                "",
+                0,
+                files,
+                snapshot_hash,
+                exclusions,
+                state,
+                max_files=max_files,
+                max_scan_bytes=max_scan_bytes,
+                max_file_bytes=max_file_bytes,
+                max_entries=max_entries,
+            )
+            inputs: list[dict[str, str]] = []
+            for relative, fd, _ in files:
+                try:
+                    raw = self._read_fd(fd, max_file_bytes)
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    exclusions["invalid_utf8"] += 1
+                    continue
+                except OSError:
+                    exclusions["races"] += 1
+                    continue
+                inputs.append({"path": relative, "text": text})
+            payload = json.dumps(
+                {
+                    "pattern": pattern,
+                    "files": inputs,
+                    "max_results": max_results,
+                    "max_match_text_chars": _MAX_MATCH_TEXT_CHARS,
+                    "timeout_seconds": timeout,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            helper_result = self._run_regex_helper(payload, timeout)
+            if helper_result.get("kind") == "invalid_pattern":
+                raise ValueError(f"invalid regex pattern: {helper_result.get('error', '')}")
+            if helper_result.get("ok") is not True:
+                raise SandboxError("regex helper failed")
+            matches = helper_result.get("matches")
+            if not isinstance(matches, list):
+                raise SandboxError("regex helper returned malformed matches")
+            result_truncated = bool(helper_result.get("truncated"))
+            if result_truncated:
+                exclusions["result_limit"] += 1
+            matches.sort(key=lambda item: (str(item["path"]), int(item["line"])))
+        finally:
+            for _, fd, _ in files:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            os.close(start_fd)
+        return {
+            "pattern": pattern,
+            "matches": matches,
+            "truncated": bool(state["truncated"] or result_truncated),
+            "scope": {
+                "path": self._relative_parts(scope_parts),
+                "literal": False,
+                "regex": True,
+                "timeout_seconds": timeout,
+                "max_results": max_results,
+                "max_files": max_files,
+                "max_entries": max_entries,
                 "max_scan_bytes": max_scan_bytes,
                 "max_file_bytes": max_file_bytes,
             },
@@ -585,6 +1100,65 @@ class Sandbox:
                 if stream is not None and not stream.closed:
                     stream.close()
         return bytes(buffers["stdout"]), bytes(buffers["stderr"]), timed_out, cancelled, output_limited
+
+    def _run_regex_helper(self, payload: bytes, timeout: float) -> dict[str, Any]:
+        environment = {
+            "PATH": "/usr/bin:/bin",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "LC_ALL": "C",
+        }
+        with self._lock:
+            if self._run_active:
+                raise SandboxError("sandbox already owns an active execution")
+            self._run_active = True
+            self._cancel_requested = False
+        process = None
+        try:
+            try:
+                process = subprocess.Popen(
+                    [self.interpreter, "-I", "-S", "-c", _REGEX_HELPER],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    env=environment, start_new_session=True,
+                )
+            except OSError as exc:
+                raise SandboxError(f"could not start regex helper: {exc}") from exc
+            with self._lock:
+                self._active = process
+                cancelled = self._cancel_requested
+            if cancelled:
+                self._kill(process)
+            try:
+                stdout, stderr = process.communicate(input=payload, timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                raise SandboxError("regex search timed out") from exc
+            if self._cancel_requested:
+                raise SandboxError("regex search cancelled")
+            if process.returncode == -signal.SIGALRM:
+                raise SandboxError("regex search timed out")
+            if process.returncode != 0:
+                detail = stderr.decode("utf-8", "replace")[:256]
+                raise SandboxError(f"regex helper failed: {detail}")
+            try:
+                result = json.loads(stdout.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SandboxError("regex helper returned invalid JSON") from exc
+            if not isinstance(result, dict):
+                raise SandboxError("regex helper returned a non-object")
+            return result
+        finally:
+            try:
+                if process is not None:
+                    if process.poll() is None:
+                        self._kill(process)
+                    process.wait(timeout=2)
+                    for pipe in (process.stdin, process.stdout, process.stderr):
+                        if pipe is not None:
+                            pipe.close()
+            finally:
+                with self._lock:
+                    self._active = None
+                    self._run_active = False
 
     def _profile(self, script_fd_path: str | None = None) -> str:
         allowed_dirs = self._runtime_directories()
@@ -797,6 +1371,7 @@ class Sandbox:
         max_files: int,
         max_scan_bytes: int,
         max_file_bytes: int,
+        max_entries: int,
     ) -> None:
         if state["truncated"]:
             return
@@ -805,7 +1380,7 @@ class Sandbox:
             with os.scandir(directory_fd) as entries:
                 for entry in entries:
                     state["entries"] += 1
-                    if state["entries"] > _DEFAULT_SEARCH_ENTRIES:
+                    if state["entries"] > max_entries:
                         exclusions["entry_limit"] += 1
                         state["truncated"] = True
                         break
@@ -863,6 +1438,7 @@ class Sandbox:
                         max_files=max_files,
                         max_scan_bytes=max_scan_bytes,
                         max_file_bytes=max_file_bytes,
+                        max_entries=max_entries,
                     )
                 finally:
                     os.close(child_fd)
@@ -938,6 +1514,46 @@ class Sandbox:
             or "credential" in lowered
             or lowered.startswith("secret")
         )
+
+    @staticmethod
+    def _line_limit(value: Any, default: int) -> int:
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError("line number must be a positive integer")
+        return value
+
+    @staticmethod
+    def _text_position(text: str, line: Any, column: Any) -> int:
+        if (
+            isinstance(line, bool)
+            or not isinstance(line, int)
+            or line <= 0
+            or isinstance(column, bool)
+            or not isinstance(column, int)
+            or column <= 0
+        ):
+            raise ValueError("edit positions must be positive integers")
+        lines = text.splitlines(keepends=True)
+        if not lines:
+            if line == 1 and column == 1:
+                return 0
+            raise ValueError("edit position is outside the file")
+        last_parts = lines[-1].splitlines()
+        last_body = last_parts[0] if last_parts else ""
+        if line == len(lines) + 1:
+            if column == 1 and len(last_body) < len(lines[-1]):
+                return len(text)
+            raise ValueError("edit position is outside the file")
+        if line > len(lines):
+            raise ValueError("edit position is outside the file")
+        raw = lines[line - 1]
+        parts = raw.splitlines()
+        body = parts[0] if parts else ""
+        if column > len(body) + 1:
+            raise ValueError("edit column is outside the line")
+        offset = sum(len(item) for item in lines[: line - 1])
+        return offset + column - 1
 
     @staticmethod
     def _bounded_limit(value: Any, default: int) -> int:

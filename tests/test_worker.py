@@ -1,4 +1,6 @@
 """Worker authority transitions using the real transactional domain store."""
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -81,6 +83,33 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse((self.stage / 'late.txt').exists())
         self.assertEqual(self.store.goal(self.goal['id'])['invocations'][0]['status'], 'cancelled')
 
+    def test_file_change_during_provider_turn_rejects_stale_edit(self):
+        original = "answer = 'old'\n"
+        current = "answer = 'human revision'\n"
+        path = self.stage / "answer.py"
+        path.write_text(original, encoding="utf-8")
+        fixture = InterruptedResponse(
+            lambda: path.write_text(current, encoding="utf-8"),
+            tool="staged_edit",
+            arguments={
+                "path": "answer.py",
+                "expected_sha256": hashlib.sha256(original.encode()).hexdigest(),
+                "edits": [{"old_text": "'old'", "replacement": "'model revision'"}],
+            },
+        )
+        self.run_fixture(fixture)
+        self.assertFalse(fixture.tool_result["ok"])
+        self.assertEqual(current, path.read_text(encoding="utf-8"))
+
+    def test_python_profile_cannot_launch_a_container_command(self):
+        fixture = InterruptedResponse(
+            lambda: None, tool="staged_command",
+            arguments={"argv": ["sh", "-c", "echo bypass > bypass.txt"]},
+        )
+        self.run_fixture(fixture)
+        self.assertFalse(fixture.tool_result["ok"])
+        self.assertFalse((self.stage / "bypass.txt").exists())
+
 
     def test_assistant_text_and_stop_diagnostic_are_separate(self):
         outcome = self.run_fixture(TextWithDiagnosticResponse(lambda: None))
@@ -113,6 +142,34 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(self.store.goal(self.goal['id'])['effects_allowed'])
         self.assertEqual(self.store.effects(self.goal['id']), [])
 
+
+    def test_receipt_paging_preserves_unknowns_and_does_not_expose_other_goals_or_provider_context(self):
+        assignment = self.store.assign(self.goal["id"])
+        invocation = self.store.invoke(self.goal["id"], assignment["id"], {"messages": []})
+        self.store.receipt(invocation["id"], "tool.staged_search", {"query": "α"},
+                           {"matches": [{"text": "α" * 70_000}], "truncated": True})
+        self.store.receipt(invocation["id"], "provider.pi.payload", {}, {"controller": "not a task result"})
+        self.store.finish(invocation["id"], "interrupted", "")
+        saved = self.store.goal(self.goal["id"])
+        task_receipt, provider_receipt = saved["invocations"][0]["receipts"]
+        worker = Worker(self.store, "fixture-model", provider="openai", sandbox=self.sandbox)
+        worker._goal_id = self.goal["id"]
+        first = worker._read_receipt({"receipt_id": task_receipt["id"], "max_chars": 65536})["receipt"]
+        second = worker._read_receipt({
+            "receipt_id": task_receipt["id"], "offset_chars": first["next_offset_chars"],
+            "max_chars": 65536,
+        })["receipt"]
+        content = first["content"] + second["content"]
+        self.assertIsNone(second["next_offset_chars"])
+        self.assertEqual(hashlib.sha256(content.encode()).hexdigest(), first["sha256"])
+        self.assertTrue(json.loads(content)["result"]["truncated"])
+        self.assertTrue(first["historical_only"])
+        with self.assertRaises(PermissionError):
+            worker._read_receipt({"receipt_id": provider_receipt["id"]})
+        other = self.store.create_goal("A separate private task")
+        worker._goal_id = other["id"]
+        with self.assertRaises(KeyError):
+            worker._read_receipt({"receipt_id": task_receipt["id"]})
 
 if __name__ == '__main__':
     unittest.main()

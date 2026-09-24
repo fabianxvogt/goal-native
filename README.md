@@ -4,12 +4,16 @@
 
 A session-first, local AI CLI. Open it and type a request; durable goals, changing requirements and reusable work are handled underneath. An interrupted task can leave useful work behind without silently granting an old agent permission to act.
 
-**Status: budget-stop recovery, reviewed patch/file export, and a source bootstrap with `./goal`.** No manual goal creation is needed. This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) separates actual coding journeys from synthetic protocol fixtures and records failures/repairs. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocol](docs/EVALUATION.md) govern broader claims.
+**Status: repo-aware coding tools, optional isolated Python/TypeScript commands and language servers, resumable work, and reviewed code export.** No manual goal creation is needed. This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) separates live coding, isolation probes and synthetic protocol fixtures. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocols](docs/EVALUATION.md) govern broader claims.
+
+Coding quality is not established: the bounded historical pilot still had no
+finished phases after harness repairs. The verification record retains failed
+attempts and independent checks; it is not a “best coding agent” benchmark.
 
 ## Run locally
 
-Python 3.11+, Git and Node.js 22.19+ with npm. The exercised code-execution
-platform is macOS. Clone this repository, then:
+Python 3.11+, Git and Node.js 22.19+ with npm. The exercised host is macOS:
+restricted Python by default, or optional Docker Desktop Linux execution. Clone this repository, then:
 
 ```sh
 python3 scripts/bootstrap.py
@@ -32,6 +36,32 @@ steps without printing tokens or calling a model. Before login, credential
 readiness is expected to be false. Pi refreshes expired OAuth access tokens on
 the next explicit run. `./goal` works from any caller directory using the
 checkout's environment; relative `--state` and source paths remain caller-relative.
+
+### Isolated Python and TypeScript
+
+For shell commands, compilers, subprocesses and language-server navigation,
+build the reviewed runtime image explicitly, then select Docker execution:
+
+```sh
+docker build -t goal-native-runtime:local runtime
+./goal doctor --execution docker --container-image goal-native-runtime:local --model gpt-6-luna
+./goal --execution docker --source-dir /path/to/project --context-budget 65536
+```
+
+This profile adds `staged_command` and `staged_language` to the repository
+read/discover/search/edit tools. Python and TypeScript definitions, references
+and diagnostics come from real isolated language servers, not text-search guesses.
+Every command gets a disposable container and the selected staged snapshot.
+There are no host mounts, controller credentials or Docker socket inside it.
+The original project is never overwritten; review and export the candidate.
+
+Network is denied unless you start with `--allow-network` **and** the individual
+command requests it. Dependencies and generated build outputs do not survive
+between commands: install and check in one command, or explicitly build a
+dependency image and select it with `--container-image`. Runtime execution never
+pulls an image automatically. Image builds may download public dependencies.
+The local Linux Docker engine and the selected image are trusted prerequisites;
+remote engines and privileged-host fallbacks are refused.
 
 ### Just start a session
 
@@ -234,15 +264,19 @@ output reserve is not an enforced Codex generation limit.
 
 Arbitrary code runs only through the restricted execution adapter. Unsupported or unavailable isolation fails closed; it never falls back to ordinary privileged host execution. The exact exercised boundary and limits belong in verification evidence, not an assertion of perfect sandboxing.
 
-The currently exercised execution target is **macOS, staged Python only**:
-no shell, subprocesses, forks or network. Each run owns a separate stage.
-Sibling/package imports and paths relative to `__file__` work inside the selected
-project. The isolated interpreter reads the entry script through its pinned file
-descriptor, with only its staged script directory and project root added to
-module search; it does not inherit the controller's `PYTHONPATH`.
-This is not a VM: stage admission limits are not runtime disk/memory quotas,
-and the controller, interpreter installation and host user remain trusted.
-See the [sandbox review](docs/REVIEW-SANDBOX.md) for the exact boundary.
+- **Default `--execution python`:** macOS staged Python only; no shell,
+  subprocesses, forks or network. Sibling/package imports and `__file__`-relative
+  paths work in the selected project without inherited `PYTHONPATH`.
+  This is not a VM and has no runtime memory/disk quotas; see the
+  [original sandbox review](docs/REVIEW-SANDBOX.md).
+- **Opt-in `--execution docker`:** reviewed Linux runtime with a read-only root,
+  non-root task user, dropped task capabilities, bounded CPU/memory/PIDs/tmpfs,
+  cancellation, and an independent supervisor deadline. Each invocation copies
+  selected files in and validates output before staged publication. Commands
+  may run a shell inside this boundary, never the host shell. The controller,
+  local engine, image and host user remain trusted. This is not a proof against
+  kernel vulnerabilities or malicious images. Exact limits and exercised
+  controller-death behavior are in [verification](docs/VERIFICATION.md).
 
 Run from the source checkout. A wheel alone does not contain the pinned
 Node/pi runtime and is not a supported standalone distribution.

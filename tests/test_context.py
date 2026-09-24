@@ -70,6 +70,27 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(claim['unavailable_inputs'], ['missing-quote'])
         self.assertEqual(claim['limitations'], 'Provisional')
 
+    def test_interrupted_tool_observation_is_available_or_retrievable_without_a_finding(self):
+        receipt = {
+            "id": "check", "tool": "tool.staged_run", "parameters": {"path": "check.py"},
+            "result": {"exit_code": 1, "stdout": "boundary case failed", "timed_out": False},
+            "note": "Worker-controlled check, not trusted acceptance",
+        }
+        history = [{"id": "stopped", "status": "interrupted", "result": "",
+                    "revision": 1, "input_version": 1, "authority_version": 1,
+                    "receipts": [receipt]}]
+        goal = self.goal(revision=2, input_version=2, authority_version=2)
+        payload = self.payload(compile_context(goal, history=history))
+        observation = payload["tool_observations"][0]
+        self.assertEqual(observation["receipt"]["result"]["exit_code"], 1)
+        self.assertTrue(observation["historical_only"])
+        self.assertNotEqual(observation["origin"]["revision"], payload["request"]["revision"])
+        receipt["result"]["stdout"] *= 10_000
+        payload = self.payload(compile_context(goal, history=history))
+        self.assertEqual(payload["tool_observations"], [])
+        self.assertEqual(payload["receipt_directory"][0]["id"], "check")
+        self.assertEqual(payload["request"]["constraints"], "Never contact suppliers")
+
 
 if __name__ == '__main__':
     unittest.main()

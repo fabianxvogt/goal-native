@@ -10,6 +10,31 @@ Darwin 25.5 / arm64; Python 3.12.12; Node 22.23.2. Pi source is the submodule
 at `a7d17e39aaa0091c7573d0790714751956f10bd1`, package version `0.87.1`.
 `npm run build:upstream` passed, including the cloned credential-store build.
 
+## Repository tools and interrupted-check recovery
+
+Actual CLI → Node → pinned pi → loopback HTTP exercised discovery, a Unicode-capable
+line-range read with complete-file hash, a surgical edit, rejection of a second edit
+using the stale hash, regex search, and restricted Python execution. The resulting
+script printed `5`; the selected source stayed unchanged and the goal stayed draft.
+Two provider requests used **synthetic protocol responses**, not a live model or
+performance baseline.
+
+Two additional actual-process probes exposed and repaired continuation failures:
+
+- Ctrl-C initially returned from the controller while its expensive regex helper
+  remained alive. The retained before probe killed that own orphan. After cleanup
+  was bound to the sandbox execution lifecycle, the same SIGINT probe returned
+  with the helper reaped. A cancellation/reuse regression covers this transition.
+- A real staged check exited zero and its exact stdout was stored, but interruption
+  before a reply/finding left that observation out of compiled continuation context.
+  The after probe includes the saved receipt without inventing a finding. Historical
+  qualification and original versions remain explicit; this does not establish
+  current-candidate correctness or a token-efficiency gain.
+
+The expanded upstream build, including pi-tui, passed. Importing the native SDK
+then exposed its actual `createAgentSession` function. Import readiness alone is
+not native-session or comparative execution evidence.
+
 ## Budget recovery and reviewed coding delivery
 
 **86 application checks passed**, including six installation checks, with
@@ -358,6 +383,174 @@ are fixture values, not measured model costs.
 - Review repairs closed export-temp symlink exposure, credential filename
   omissions, unbounded import/copy paths and sandbox execution-admission gaps.
 
+## Docker, language tools, and native sessions
+
+**Classification: INCREMENTAL. Evidence: EMPIRICAL.** These are executed
+capability checks, not comparative coding-quality or efficiency results.
+
+- Runtime image `sha256:8dfc62e5b3fd764fd8eb21556ab095a61cca56d61cb2db0cb66f6d5c560458e8`
+  ran nested Python code and compiled/executed TypeScript. Both produced `5`.
+  Build outputs stayed in the disposable container when publication was disabled.
+- Python and TypeScript cross-file definitions/references resolved to the actual
+  declaration files. Deliberate type errors produced Pyright
+  `reportAssignmentType` and TypeScript `2322`. Astral Unicode before the queried
+  symbol preserved 1-based codepoint columns through UTF-16 LSP positions.
+- Execution exposed a cold TypeScript server returning incomplete navigation
+  and an empty syntax-only diagnostics publication. Queries now use a
+  semantic-only server and explicit synchronous diagnostic responses; the
+  repeated actual language-tool smoke passed all six operations without source
+  mutation. No sleep or empty-result fallback is used as readiness evidence.
+- A live isolation probe observed UID `65532`, zero effective capabilities,
+  no-new-privileges, a read-only root, no inherited synthetic secret or host
+  marker, and no active non-loopback interface. An outbound connection failed
+  and an ungranted network request was rejected. Kernel cgroups reported
+  512 MiB memory, zero additional swap, one CPU and 128 PIDs; workspace tmpfs
+  reported 256 MiB. Output was bounded to 65,536 bytes.
+- Timeout and cancellation stopped a task with a detached descendant. Killing
+  a separate controller with `SIGKILL`, after observing both live task PIDs,
+  removed its container and orphan Docker CLI in `0.24` seconds in this probe.
+  Unsafe symlink output was rejected. Empty-directory execution exposed a tar
+  finalization bug, now repaired rather than avoided with a seeded file.
+- The actual pinned native-pi SDK completed an authored inclusive-sum fix using
+  the canonical controlled tools, then reopened the same persistent session in
+  a fresh Node process to add negative-input rejection. Independent commands
+  checked inclusive positive sums, zero, and the changed exception requirement.
+  The selected source remained unchanged and the goal remained `draft`.
+  Live provider: `openai-codex/gpt-6-luna`, no API billing fallback.
+  Cold: six rounds, 10,640 input / 333 output tokens.
+  Continuation: four rounds, 13,404 input / 315 output tokens.
+  Reported subscription cost remained **unknown**, not zero.
+  Raw traces remain outside Git; their SHA256 values are
+  `62d05320d5b3f52614fdab1ee2e8c0377ebe88b54e2cc7a5d6c4c05fe4e439fb`
+  and `aff6a380ad0c98cab20c6c7b89e299c6fbb53e90bec4ca55e9f34b7706fa3b3b`.
+- Actual CLI → pinned pi → Docker transport smoke used an explicitly synthetic
+  loopback provider. It exercised range reads, stale-edit rejection, regex,
+  Python output `5`, Node output `42`, and TypeScript diagnostic `2322`;
+  source remained unchanged and the goal stayed draft. This is integration
+  evidence, not model performance.
+- The retained live native session was recovered from its real manifest/session
+  header in another process context; a changed checker identity was rejected.
+  Recovery does not synthesize a session ID when an interrupted bridge has no result.
+
+## Historical coding oracle qualification
+
+**Classification: INCREMENTAL / EMPIRICAL. Proof status: executed behavioral
+observations, not a formal correctness or superiority proof.**
+
+The frozen ten-task preparation completed all 40 source/reference executions:
+every pre-fix source failed and every pinned reference passed, for both cold and
+changed-request phases. Preparation SHA256:
+`cd296f2ef208af03c60d20b2aed282a2f5af15099971ceb805938e76ed321033`.
+The selected public sources, licenses, dependency/checker images, named checks
+and raw receipts are bound by that external manifest; no source or reference
+archives are added to this repository.
+
+Preparation exposed checker-image read permissions, a Flask teardown exception
+that lost the stable check set, and an incorrect expected Flow formatting case.
+These were repaired from actual runtime/reference observations before historical
+model measurement. Async-fixture checks observe setup exception and warning
+categories, not diagnostic prose. Continuation adds distinct scenarios rather
+than double-counting identical cases. Preparation failures remain retained
+outside Git; they are not model attempts.
+
+### First live matrix: retained failures
+
+The initial two-arm run used actual `openai-codex/gpt-6-luna`, 12 rounds,
+180 seconds and a 65,536 estimated-token context ceiling per phase. All 40
+planned phase attempts were recorded, but none finished:
+
+| Arm | Independently passing phases | Stops |
+| --- | ---: | --- |
+| Goal Native | 0 / 20 | 17 context limits; 3 round limits |
+| Native pi | 1 / 20 | 10 context limits; 1 round limit; 9 bridge errors |
+
+Report SHA256:
+`0c7cdef9d9dc52be92b731bbbfdfff3868f1fe56d5c9be90f9dbb9e89583893c`.
+Those rows remain unchanged outside Git. They are **not a fair ranking**:
+pre-request accounting duplicated UI-only tool-result data and some tool
+declarations, while native continuation could turn a rejected oversized request
+into an unrelated pre-admission event error. Unknown native accounting and
+subscription cost remained null. Worker completion was never substituted for
+an independent pass.
+
+### Review repairs and after-proof
+
+Two independent read-only reviews covered runtime/LSP boundaries and
+repository tools/native sessions/evaluation evidence. Scoped repairs were
+accepted after parent-run verification:
+
+- Native admission rejection: copied real persisted history reproduced
+  `worker_error` with no provider request. After repair, the same scenario
+  returned `interrupted/context_budget`, retained a genuine native result and
+  session reference, and still made zero provider requests.
+- UI-only tool-result metadata and exact duplicate declarations no longer enter
+  hard input accounting. A CLI transport exercise with a 31,500-byte read plus
+  repository edits, Python/Node commands and real TypeScript diagnostics
+  completed under the same 65,536 ceiling. This is not a token-efficiency claim.
+- Pre-start cancellation previously allowed `ran.txt` to be written; the
+  terminal cancellation latch now rejects admission. Directory→file replacement
+  failed before empty-parent pruning; both topology directions now pass real
+  runtime checks. File replacements are atomic; multi-file updates are not.
+- LSP responses require an explicit JSON-RPC result/error, Python navigation
+  waits for analysis, file-cache/output bounds are enforced, and truncation is
+  explicit. All six real Python/TypeScript navigation/diagnostic operations
+  passed again with Unicode positions and unchanged candidate bytes.
+- Native result validation hashes/counts the known trace independently and
+  checks model/profile/schema/limits and controller-recorded response IDs/usage.
+  Forged hash/model/usage and changed trace bytes are rejected.
+- **118 application tests passed**, including live Docker integration, with
+  ResourceWarnings treated as errors. **4 legacy evaluator safeguards passed.**
+  The legacy canonical-worker CLI route also reached its real protocol validator.
+- Large-diagnostic execution returned 27 of 160 actual TypeScript `2322` errors,
+  with `truncated: true`, a 60,173-byte result and unchanged candidate bytes.
+  The final isolation probe again verified the same cgroup, network, privilege
+  and output limits; controller death removed its container and orphan CLI in
+  `0.142` seconds after live task/descendant readiness.
+- Commands that wrote a partial file before exit `9` or timeout (exit `-9`)
+  retained that file in their private stage, with `published: true` and accurate
+  failure/timeout receipts. The separately selected source stayed unchanged.
+
+Validated partial output remains private staged recovery, not delivery or
+acceptance. Reviews explicitly retain trusted-host/image/kernel limits and
+non-transactional multi-file publication. Broader fresh tasks and external
+developer use remain required.
+
+### Repaired-harness replication
+
+The same ten tasks were freshly prepared after the reviewed repairs; all 40
+source/reference checks again qualified. Preparation SHA256:
+`57e0de2541d90ae2f5aa59124d0972a5168d1b999761f60b1084fe86ccd996bb`.
+The paired live run retained the same model, tools and 12-round / 180-second /
+65,536 estimated-token bounds. Report SHA256:
+`4fec0847f53d1e2e91b69f84d29485eedeb49cb09485f2dbb9210308ee516699`.
+
+| Arm | Independently passing phases | Stops |
+| --- | ---: | --- |
+| Goal Native | 2 / 20 | 12 round limits; 8 context limits |
+| Constrained native pi | 0 / 20 | 7 round limits; 13 context limits |
+
+The two passes are the cold and changed-request phases of
+`pytest-12444-approx-formatting`, not two independent tasks. **No phase finished.**
+Every phase reported a draft goal. No bridge or evidence-validation error
+remained in this run; checks still failed on the other candidates rather than
+blessing unfinished work.
+
+Goal Native recorded 1,134,615 input tokens (181,760 cached), 9,278 output tokens
+and 576.989894 summed worker seconds. Native pi recorded 461.783129 summed worker
+seconds, but its aggregate token usage remains unknown: five continuations
+stopped before any provider request and retain unknown empty-trace accounting.
+Subscription dollar cost remains unknown for both arms. These are observed
+worker receipts, not an efficiency ranking.
+
+Both reports remain retained outside Git under the
+`goal-native-coding-measurement-20260924` and
+`goal-native-coding-reviewed-measurement-20260924` external run directories.
+The repaired run exercises the measurement workflow, **not strong coding
+performance**. It is development feedback on already-seen historical tasks;
+no fresh-test, generalization or superiority claim follows. Real-task completion
+under practical declared limits and multi-day developer use remain acceptance
+gates before UI expansion.
+
 ## Limits and next acceptance
 
 1. **Basic live CLI gate satisfied:** owner authorization and Luna task execution
@@ -369,9 +562,11 @@ are fixture values, not measured model costs.
 3. The trusted-host macOS Python sandbox is not a VM. Same-user host tampering,
    runtime disk/memory quotas and content-immutable search snapshots are outside
    the reviewed guarantee. See [sandbox review](REVIEW-SANDBOX.md).
-4. The native-pi comparison adapter and matched-budget subscription evaluation
-   remain outstanding. Collapsed controls, synthetic protocol responses and
-   passing tests establish no comparative efficiency or model-quality gain.
-5. The browser still exposes manual goal creation and many controls. The CLI now
-   streams and reopens local files. Budget recovery, staged-diff review/export
-   and a simpler installation path remain the next product gaps.
+4. Native-pi persisted-session execution and a complete historical matrix are
+   exercised, but the measured coding outcomes remain weak. Collapsed controls,
+   synthetic responses, passing tests and these correlated historical tasks
+   establish no comparative efficiency or model-quality gain.
+5. The browser still exposes manual goal creation and many controls. Browser
+   simplification stays behind developer use of the CLI, not ahead of it.
+   Multi-day Python/TypeScript dogfooding, fresh broader benchmarks, independent
+   success-claim labeling and additional host platforms remain open gates.

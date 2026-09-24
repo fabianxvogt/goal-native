@@ -44,7 +44,49 @@ Read-only `last_assignment_id` survives run cleanup for local recovery, includin
 rejection before the first provider invocation. It resets when the next run
 starts and does not authorize tools or effects.
 
-Supported tools: staged read/write/search/run, save_artifact and optional finding. No approve/verify trusted/commit/authority tools. Worker may prepare candidate, not authorize it. Tool results untrusted data. Staged files ONLY; reject symlinks, path escape and credential/controller paths. Arbitrary code must execute in verified OS sandbox or fail closed. Context compilation includes faithful request/constraints and known qualifications, hard admission including schema/history/output reserve, no silent required truncation. No provider credentials in task-tool environment. Persist actual model exchange for auditable capture cost. Pi integration must execute the real provider; fake transports are correctness-test fixtures only. No default pi host shell, ambient extension discovery or automatic compaction/model maintenance calls.
+Supported tools: staged file discovery, range reads, writes, hash-bound edits, literal/regex search, execution, artifact/receipt retrieval, save_artifact and optional finding. No approve/verify trusted/commit/authority tools. Worker may prepare a candidate, not authorize it. Tool results are untrusted data. Staged files ONLY; reject symlinks, path escape and credential/controller paths. Arbitrary code executes in the selected verified isolation profile or fails closed. Context compilation includes faithful requests/constraints and known qualifications, with hard schema/history/output admission and no silent required truncation. No provider credentials enter task tools. Persist actual model exchanges; fake transports are labeled correctness fixtures only. No default pi host shell, ambient extension discovery or automatic compaction/model-maintenance calls.
+
+Repository tools share one controller-owned schema with the pi bridge:
+
+| Tool | Contract |
+| --- | --- |
+| `staged_read` | Optional 1-based inclusive `start_line`/`end_line`; exact Unicode/newlines, complete-file SHA256, range and continuation metadata. The complete file remains subject to the read cap. |
+| `staged_files` | Bounded file discovery with declared scope, snapshot identity, exclusions and truncation. |
+| `staged_search` / `staged_regex` | Literal or time-bounded regex search over a no-follow opened-file manifest. Regex runs in a killable helper, not the controller's regex engine. |
+| `staged_edit` | Required `expected_sha256`; unique `old_text` anchors or 1-based Unicode line/column ranges with exclusive ends. All edits address the original file. Ambiguity, overlap and stale bytes reject before atomic replacement. |
+| `staged_write` | Explicit new-file/whole-file replacement; prefer hash-bound edits for existing code. |
+| `read_receipt` | Same-goal task-tool receipts only; exact JSON paged by `offset_chars` and `max_chars`, with hash, original invocation versions and historical-only qualification. Provider/controller receipts are not exposed. |
+| `staged_run` | Default macOS Python profile only; fixed interpreter and restricted staged entry script. |
+| `staged_command` | Docker profile replaces `staged_run`: direct `argv`, optional `timeout_seconds` and `network`. Commands run at `/workspace`; a shell must be an explicit argv program. Network needs both controller permission and this command's request. Receipt binds before/after candidate hashes, immutable image, exit/timeout/cancel/output-limit state and publication. |
+| `staged_language` | Docker only: `action` = `definition`, `references` or `diagnostics`, staged `path`, optional 1-based Unicode `line`/`column`. Real Python/TypeScript servers run offline with publication disabled. Complete results bind the queried candidate/image; unavailable, malformed or incomplete responses are errors, never invented clean diagnostics. |
+
+Language `complete` means server analysis completed, not that an arbitrarily
+large result set fits the response. `truncated` and omitted counts disclose
+bounded listings; an empty truncated listing is not evidence of clean code.
+
+Recent staged-tool receipts can enter continuation context without an assistant
+summary or finding. Oversized observations are omitted whole, with bounded receipt
+directory entries for retrieval; qualifications are never trimmed to fit. A past
+successful command is not current verification, acceptance or permission to act.
+Same-user host tampering remains outside the file-tool race guarantee.
+
+`Worker(..., command_runtime=ContainerRuntime(sandbox.root, ...))` selects the
+Docker schema. Root identity must match the file sandbox. CLI flags are
+`--execution docker`, `--container-image` and explicit `--allow-network`;
+there is no automatic downgrade. Each container is disposable; dependency
+installation and its checks must share a command or use a prebuilt image.
+The reviewed supervisor terminates descendants and independently bounds its
+lifetime even if the controller dies. That guarantee does not extend to an
+arbitrary user-supplied image that replaces the supervisor.
+
+Command receipt `published` means **copied into this private recovery stage**,
+not accepted, exported, or applied to the selected source checkout. Validated
+partial files may survive a failed, timed-out or cancelled command; failure
+flags remain attached and the next run must recheck the candidate. No candidate
+is recovered when the supervisor cannot return a valid archive. Individual file
+replacements are atomic, but a multi-file stage update is not one transaction.
+`ContainerRuntime.cancel()` is terminal for that runtime; continuation constructs
+a fresh runtime over a fresh copied stage.
 
 Bare CLI invocation and `chat` open a terminal session, defaulting to Codex
 `gpt-6-luna` only for that interface. JSON `run`/`resume`/`ask` still require

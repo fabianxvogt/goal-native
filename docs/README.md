@@ -1,11 +1,12 @@
 # Documentation
 
-- [Observed verification](VERIFICATION.md): budget-stop recovery, live multi-file coding through interruption/restart/reviewed export, source installation, and earlier failures/repairs. Synthetic protocol fixtures are labeled separately.
+- [Observed verification](VERIFICATION.md): live coding/continuation, repository tools, Docker process/resource boundaries, real language servers, native sessions and historical-task outcomes. Synthetic protocol fixtures and repairs are labeled separately.
 - [Acceptance contract](CONTRACT.md): owner proposal mapped to implementation and evidence gates.
 - [Architecture](ARCHITECTURE.md): cloned pi foundation, integration ownership and enforcement hooks.
 - [Runtime API](API.md): controller/worker/UI integration, authority and ownership boundaries.
-- [Evaluation](EVALUATION.md): preregistered lifecycle comparison, independent assessment and honest reporting rules.
+- [Evaluation](EVALUATION.md): the unchanged four-arm lifecycle claim gates and the separate two-arm historical coding pilot with real native-pi sessions and independent isolated checks.
 - [Start a session](../README.md#just-start-a-session): automatic goals and explicit budget continuation. [Reviewed code export](../README.md#review-and-export-code): source selection, immutable baselines and patch/file delivery. [Source bootstrap](../README.md#run-locally): prerequisites, `./goal` and doctor.
+- [Isolated Python and TypeScript](../README.md#isolated-python-and-typescript): optional Docker setup, command/dependency lifetime, language tools and network permissions.
 - [Roadmap](../ROADMAP.md): current status, next gate and release record.
 - Independent reviews: [domain](REVIEW-DOMAIN-FINAL.md),
   [pi supervisor](REVIEW-BRIDGE.md), [sandbox](REVIEW-SANDBOX.md),
