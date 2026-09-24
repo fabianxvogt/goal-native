@@ -39,18 +39,20 @@ class ResponsesFixture(BaseHTTPRequestHandler):
             item = {'type': 'message', 'id': 'msg_fixture', 'role': 'assistant',
                     'status': 'completed', 'content': [{'type': 'output_text',
                     'text': 'Transport fixture completed; draft saved.', 'annotations': []}]}
+        items = getattr(self.server, 'first_items', [item]) if turn == 1 else [item]
         response = {'id': f'resp_fixture_{turn}', 'object': 'response', 'status': 'completed',
-                    'model': getattr(self.server, 'model', 'gpt-4.1-mini'), 'output': [item],
+                    'model': getattr(self.server, 'model', 'gpt-4.1-mini'), 'output': items,
                     'usage': {'input_tokens': 64, 'output_tokens': 32, 'total_tokens': 96,
                               'input_tokens_details': {'cached_tokens': 16},
                               'output_tokens_details': {'reasoning_tokens': 8}}}
-        events = [
-            {'type': 'response.created', 'response': {'id': response['id'], 'status': 'in_progress'}},
-            {'type': 'response.output_item.added', 'output_index': 0,
-             'item': {**item, 'arguments': ''} if turn == 1 else {**item, 'content': []}},
-            {'type': 'response.output_item.done', 'output_index': 0, 'item': item},
-            {'type': 'response.completed', 'response': response},
-        ]
+        events = [{'type': 'response.created', 'response': {'id': response['id'], 'status': 'in_progress'}}]
+        for index, output in enumerate(items):
+            initial = {**output, 'arguments': ''} if output['type'] == 'function_call' else {**output, 'content': []}
+            events.extend([
+                {'type': 'response.output_item.added', 'output_index': index, 'item': initial},
+                {'type': 'response.output_item.done', 'output_index': index, 'item': output},
+            ])
+        events.append({'type': 'response.completed', 'response': response})
         body = ''.join('event: ' + event['type'] + '\ndata: ' + json.dumps(event) + '\n\n'
                        for event in events).encode()
         self.send_response(200)
@@ -107,6 +109,47 @@ class StreamingFixture(ResponsesFixture):
 
 
 class CLITransportTests(unittest.TestCase):
+    def test_context_stop_retains_assistant_text_and_rejected_admission_across_reopen(self):
+        server = ThreadingHTTPServer(('127.0.0.1', 0), ResponsesFixture)
+        server.requests = []
+        assistant_text = 'I will inspect the selected source before continuing.'
+        server.first_items = [
+            {'type': 'message', 'id': 'msg_budget', 'role': 'assistant', 'status': 'completed',
+             'content': [{'type': 'output_text', 'text': assistant_text, 'annotations': []}]},
+            {'type': 'function_call', 'id': 'fc_budget', 'call_id': 'call_budget',
+             'name': 'staged_read', 'arguments': json.dumps({'path': 'large.txt'}), 'status': 'completed'},
+        ]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory(prefix='goal-native-budget-stop-') as temporary:
+            source, state = Path(temporary) / 'source', Path(temporary) / 'state'
+            source.mkdir()
+            (source / 'large.txt').write_text('bounded source data ' * 800, encoding='utf-8')
+            environment = dict(os.environ, OPENAI_API_KEY='TRANSPORT_FIXTURE_NOT_A_SECRET',
+                               OPENAI_BASE_URL=f'http://127.0.0.1:{server.server_port}/v1')
+            result = subprocess.run(
+                [sys.executable, '-m', 'goal_native', 'ask', 'Inspect large.txt and explain it.',
+                 '--state', str(state), '--source-dir', str(source), '--provider', 'openai',
+                 '--model', 'gpt-4.1-mini', '--context-budget', '16384'],
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            outcome = json.loads(result.stdout)
+            self.assertEqual(1, len(server.requests))
+            with Store(state) as store:
+                goal = store.goal(outcome['goal_id'])
+                attempt = goal['runs'][-1]
+                self.assertEqual('context_budget', attempt['stop_reason'])
+                self.assertEqual('interrupted', attempt['status'])
+                self.assertEqual(assistant_text, attempt['assistant_text'])
+                self.assertEqual('context_budget', attempt['diagnostic']['kind'])
+                self.assertGreater(attempt['admission']['total_tokens'], 16384)
+                self.assertEqual(16384, attempt['admission']['max_context_tokens'])
+                self.assertEqual(Path(outcome['run']['stage_dir']).name, store.local_stage(goal['id']))
+
     def test_failed_provider_does_not_invent_zero_usage_or_retry(self):
         server = ThreadingHTTPServer(('127.0.0.1', 0), ProviderErrorFixture)
         server.requests = []

@@ -413,6 +413,7 @@ class Worker:
         self._provider_usage: dict[str, dict[str, Any]] = {}
         self._admission: dict[str, Any] | None = None
         self._admission_error: str | None = None
+        self._last_assistant_text = ""
 
     @property
     def last_assignment_id(self) -> str | None:
@@ -444,6 +445,7 @@ class Worker:
         self._provider_usage = {}
         self._admission = None
         self._admission_error = None
+        self._last_assistant_text = ""
         self._goal_id = goal_id
         self._run_id = None
         self._run_attempt_id = None
@@ -520,6 +522,8 @@ class Worker:
             elif self._admission_error is not None:
                 status, stop_reason = "interrupted", "context_budget"
                 diagnostic = self._diagnostic(self._admission_error, stop_reason)
+            if not text and status != "finished":
+                text = self._last_assistant_text
             invocation_id = self._last_invocation_id
             if invocation_id is not None and invocation_id not in self._finished_invocations:
                 self._finish_current(status, text)
@@ -625,9 +629,7 @@ class Worker:
 
     def _stop_run(self, goal_id: str, status: str, stop_reason: str, message: str) -> dict[str, Any]:
         invocation_id = self._last_invocation_id
-        assistant_text = ""
-        if isinstance(self._invocation, Mapping) and isinstance(self._invocation.get("result"), str):
-            assistant_text = self._invocation["result"]
+        assistant_text = self._last_assistant_text
         if invocation_id is not None and invocation_id not in self._finished_invocations:
             self._finish_current(status, assistant_text)
         return self._complete_run(
@@ -925,6 +927,8 @@ class Worker:
             stop_reason = message.get("stopReason") if isinstance(message, dict) else None
             status = "failed" if stop_reason == "error" else "cancelled" if stop_reason == "aborted" else "finished"
             result = self._assistant_text(message)
+            if result:
+                self._last_assistant_text = result
             if not result and isinstance(message, dict):
                 result = str(message.get("errorMessage", ""))
             self._finish_current(status, result)
