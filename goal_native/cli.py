@@ -480,11 +480,13 @@ def _human_artifact(state: str, args: argparse.Namespace) -> dict[str, Any]:
 def _doctor(args: argparse.Namespace) -> dict[str, Any]:
     project_root = Path(__file__).resolve().parents[1]
     checks: dict[str, Any] = {}
+
     python_ok = sys.version_info >= (3, 11)
     checks["python"] = {
         "ok": python_ok,
         "version": ".".join(str(part) for part in sys.version_info[:3]),
         "minimum": "3.11",
+        **({"remediation": "use Python 3.11+ to launch Goal Native"} if not python_ok else {}),
     }
 
     node_path = shutil.which("node")
@@ -502,9 +504,13 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
             )
             node_version = result.stdout.strip() or result.stderr.strip()
             match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", node_version or "")
-            node_ok = bool(match and (int(match.group(1)), int(match.group(2))) >= (22, 19))
+            node_ok = bool(
+                match
+                and (int(match.group(1)), int(match.group(2)), int(match.group(3))) >= (22, 19, 0)
+                and result.returncode == 0
+            )
             if result.returncode != 0:
-                node_ok = False
+                node_error = "version command failed"
         except (OSError, subprocess.SubprocessError) as exc:
             node_error = exc.__class__.__name__
     checks["node"] = {
@@ -513,6 +519,14 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
         "version": node_version,
         "minimum": "22.19.0",
         **({"error": node_error} if node_error else {}),
+        **({"remediation": "install Node.js 22.19+ and ensure node is on PATH"} if not node_ok else {}),
+    }
+
+    git_path = shutil.which("git")
+    checks["git"] = {
+        "ok": bool(git_path),
+        "found": bool(git_path),
+        **({"remediation": "install Git and ensure git is on PATH"} if not git_path else {}),
     }
 
     upstream = project_root / "upstream" / "pi"
@@ -530,54 +544,141 @@ def _doctor(args: argparse.Namespace) -> dict[str, Any]:
             versions[name] = json.loads(package_path.read_text(encoding="utf-8")).get("version")
         except (OSError, ValueError):
             versions[name] = None
+    expected_versions = {"agent": "0.87.1", "ai": "0.87.1", "coding-agent": "0.87.1"}
     pi_cloned = upstream.is_dir() and (upstream / ".git").exists()
-    pi_build = pi_cloned and all(path.is_file() for path in dist_files) and versions == {
-        "agent": "0.87.1", "ai": "0.87.1", "coding-agent": "0.87.1",
-    }
+    pi_built = all(path.is_file() for path in dist_files)
+    bridge_ok = (project_root / "bridge" / "agent.mjs").is_file()
+    pi_ok = pi_cloned and pi_built and versions == expected_versions and bridge_ok
     checks["pi"] = {
-        "ok": pi_build,
+        "ok": pi_ok,
         "cloned": pi_cloned,
-        "built": all(path.is_file() for path in dist_files),
+        "built": pi_built,
         "versions": versions,
-        "bridge": (project_root / "bridge" / "agent.mjs").is_file(),
+        "expected_version": "0.87.1",
+        "bridge": bridge_ok,
+        **(
+            {
+                "remediation": (
+                    "run ./scripts/bootstrap.py from the source checkout; it initializes and builds "
+                    "the pinned pi 0.87.1 submodule without logging in"
+                )
+            }
+            if not pi_ok
+            else {}
+        ),
     }
 
     sandbox_ok = False
     sandbox_error = None
-    with tempfile.TemporaryDirectory(prefix="goal-native-doctor-") as temporary:
-        try:
-            sandbox = Sandbox(Path(temporary), require_os_sandbox=True)
-            sandbox.close()
-            sandbox_ok = True
-        except (OSError, SandboxError, SandboxUnavailable, ValueError) as exc:
-            sandbox_error = str(exc)
+    if sys.platform != "darwin":
+        sandbox_error = "staged execution is supported only on macOS"
+    else:
+        with tempfile.TemporaryDirectory(prefix="goal-native-doctor-") as temporary:
+            try:
+                sandbox = Sandbox(Path(temporary), require_os_sandbox=True)
+                sandbox.close()
+                sandbox_ok = True
+            except (OSError, SandboxError, SandboxUnavailable, ValueError) as exc:
+                sandbox_error = str(exc)
     checks["sandbox"] = {
         "ok": sandbox_ok,
         "macos_enforcement": sandbox_ok,
+        "platform": sys.platform,
         **({"error": sandbox_error} if sandbox_error else {}),
+        **(
+            {"remediation": "run on macOS with the staged execution support available"}
+            if not sandbox_ok
+            else {}
+        ),
+    }
+
+    runtime_names = ("python", "node", "git", "pi", "sandbox")
+    runtime_ok = all(bool(checks[name].get("ok")) for name in runtime_names)
+    runtime_remediation = [
+        str(checks[name]["remediation"])
+        for name in runtime_names
+        if checks[name].get("remediation")
+    ]
+    checks["runtime"] = {
+        "ok": runtime_ok,
+        "prerequisites": {name: checks[name] for name in runtime_names},
+        "remediation": runtime_remediation,
     }
 
     model = getattr(args, "model", None)
-    if args.provider == "openai-codex":
-        try:
-            status = _auth_command(args, "status")
-            checks["config"] = {
-                **status, "model_selected": bool(model),
-                "ok": bool(model and status.get("configured")),
+    model_selected = isinstance(model, str) and bool(model.strip())
+    provider = getattr(args, "provider", "openai-codex")
+    if provider == "openai-codex":
+        if not runtime_ok:
+            credentials = {
+                "ok": False,
+                "provider": provider,
+                "status": "blocked_by_runtime",
+                "configured": None,
+                "credential_type": None,
+                "expired": None,
+                "model_selected": model_selected,
+                "remediation": ["fix runtime prerequisites, then rerun doctor; no login was attempted"],
             }
-        except (ValueError, OSError, subprocess.SubprocessError) as exc:
-            checks["config"] = {"ok": False, "provider": args.provider, "error": str(exc)}
+        else:
+            try:
+                status = _auth_command(args, "status")
+                configured = bool(status.get("configured"))
+                expired = status.get("expired") if isinstance(status.get("expired"), bool) else None
+                usable = configured and expired is not True
+                credential_remediation: list[str] = []
+                if not configured:
+                    credential_remediation.append("run python -m goal_native login explicitly")
+                elif expired:
+                    credential_remediation.append("refresh Codex authentication with python -m goal_native login")
+                if not model_selected:
+                    credential_remediation.append("rerun doctor with an explicit --model value")
+                credentials = {
+                    "ok": bool(usable and model_selected),
+                    "provider": provider,
+                    "status": "ready" if usable and model_selected else ("expired" if expired else "missing"),
+                    "configured": configured,
+                    "credential_type": status.get("credential_type"),
+                    "expired": expired,
+                    "model_selected": model_selected,
+                    "remediation": credential_remediation,
+                }
+            except (ValueError, OSError, subprocess.SubprocessError):
+                credentials = {
+                    "ok": False,
+                    "provider": provider,
+                    "status": "unavailable",
+                    "configured": None,
+                    "credential_type": None,
+                    "expired": None,
+                    "model_selected": model_selected,
+                    "remediation": [
+                        "run ./scripts/bootstrap.py from the source checkout, then rerun doctor",
+                        "authentication status was not read and no login was attempted",
+                    ],
+                }
     else:
-        env_name = args.api_key_env
+        env_name = getattr(args, "api_key_env", "OPENAI_API_KEY")
         env_valid = isinstance(env_name, str) and bool(_SAFE_ENV_NAME.fullmatch(env_name))
         credential_present = bool(env_valid and os.environ.get(env_name))
-        checks["config"] = {
-            "ok": bool(model and credential_present), "provider": args.provider,
-            "model_selected": bool(model), "api_key_env": env_name,
+        credential_remediation = []
+        if not credential_present:
+            credential_remediation.append(f"set the {env_name} environment variable before running")
+        if not model_selected:
+            credential_remediation.append("rerun doctor with an explicit --model value")
+        credentials = {
+            "ok": bool(model_selected and credential_present),
+            "provider": provider,
+            "status": "ready" if model_selected and credential_present else "missing",
+            "model_selected": model_selected,
+            "api_key_env": env_name,
             "credential_present": credential_present,
             "base_url_present": bool(os.environ.get("OPENAI_BASE_URL")),
+            "remediation": credential_remediation,
         }
-    return {"ok": all(bool(item.get("ok")) for item in checks.values()), "checks": checks}
+    checks["credentials"] = credentials
+    checks["config"] = dict(credentials)
+    return {"ok": bool(runtime_ok and credentials["ok"]), "checks": checks}
 
 
 def _write_export(path_value: str, data: dict[str, Any]) -> str:

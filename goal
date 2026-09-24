@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P) || {
+    echo "goal-native launcher: cannot locate its source checkout" >&2
+    exit 2
+}
+ENTRYPOINT="$ROOT/.venv/bin/goal-native"
+if [ ! -x "$ENTRYPOINT" ]; then
+    echo "goal-native is not bootstrapped at $ENTRYPOINT" >&2
+    echo "Remediation: run python3 \"$ROOT/scripts/bootstrap.py\" from this source checkout." >&2
+    exit 2
+fi
+
+# Do not cd: the CLI resolves default state relative to the caller's cwd.
+exec "$ENTRYPOINT" "$@"
