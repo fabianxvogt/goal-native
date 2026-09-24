@@ -1,4 +1,4 @@
-"""Standalone JSON CLI for the canonical Goal Native controller.
+"""Session-first terminal and JSON CLI for the canonical Goal Native controller.
 
 The CLI is deliberately thin: Store remains the durable authority boundary and
 Worker remains the only model execution loop.  The browser server is imported
@@ -859,6 +859,158 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
 
 
 
+def _terminal_text(value: str) -> str:
+    """Never interpret model, imported, or diagnostic text as terminal controls."""
+    return "".join(char for char in value if char in "\n\t" or (
+        ord(char) >= 32 and not 127 <= ord(char) <= 159
+    ))
+
+
+def _chat_sessions(state: str) -> list[dict[str, Any]]:
+    with Store(_state_path(state)) as store:
+        return sorted(store.list_goals(), key=lambda goal: (goal["updated_at"], goal["id"]), reverse=True)
+
+
+def _chat_status(state: str, goal_id: str, stage: str | None) -> None:
+    with Store(_state_path(state)) as store:
+        summary = _goal_summary(store.goal(goal_id))
+    print(_terminal_text(f"\nSession  {summary['outcome']}\nID       {goal_id}"))
+    runs = summary["recorded_runs"]
+    run_status = runs[-1]["result"].get("status", "unknown") if runs else "not recorded"
+    print(_terminal_text(f"Work     last recorded run: {run_status} · {len(summary['artifacts'])} saved artifacts"))
+    print(_terminal_text(f"Goal     {summary['goal_status']} · run completion is not acceptance"))
+    if stage:
+        print(_terminal_text(f"Files    {stage}"))
+    print()
+
+
+def _chat(args: argparse.Namespace) -> int:
+    if args.model is None and args.provider == "openai-codex":
+        args.model = "gpt-6-luna"
+    if not args.model:
+        raise ValueError("--provider openai requires an explicit --model")
+    ContextBudget(max_context_tokens=args.context_budget)
+    # Readline adds local editing/history without a dependency or a history file.
+    try:
+        import readline
+    except ImportError:
+        pass
+
+    print(_terminal_text(f"\nGoal Native  /  {args.model}  /  {args.provider}"))
+    print("New session. Just type a request; goals are saved automatically.")
+    print("/new  /sessions  /resume <number or id>  /status  /help  /exit\n")
+    goal_id: str | None = None
+    stages: dict[str, str] = {}
+    listed_ids: list[str] = []
+    last_status = 0
+    while True:
+        try:
+            text = input("> ")
+            # Explicit continuation keeps multiline input dependency-free.
+            while text.endswith("\\"):
+                text = text[:-1] + "\n" + input("  ")
+        except EOFError:
+            print()
+            return last_status
+        except KeyboardInterrupt:
+            print("\nInput cleared. /exit to quit.\n")
+            continue
+        if not text.strip():
+            continue
+        try:
+            if text.startswith("/"):
+                command, _, argument = text.partition(" ")
+                argument = argument.strip()
+                if command == "/exit" and not argument:
+                    return last_status
+                if command == "/help" and not argument:
+                    print(
+                        "\nType to work. Follow-ups stay in this session.\n"
+                        "/new       Start a fresh session on the next request\n"
+                        "/sessions  List saved sessions\n"
+                        "/resume N  Open a listed session (or use its full ID)\n"
+                        "/status    Show work, goal state and local file location\n"
+                        "/exit      Leave; saved work stays on disk\n"
+                        "End a line with \\ for multiline input. Ctrl-C stops a run.\n"
+                        "Draft-only: responses never approve or deliver effects.\n"
+                    )
+                    continue
+                if command == "/new" and not argument:
+                    goal_id = None
+                    last_status = 0
+                    print("\nNew session. What would you like to do?\n")
+                    continue
+                if command == "/sessions" and not argument:
+                    sessions = _chat_sessions(args.state)
+                    listed_ids = [goal["id"] for goal in sessions]
+                    print()
+                    for number, goal in enumerate(sessions, 1):
+                        title = " ".join(_terminal_text(goal["outcome"]).split())
+                        print(f"  {number}. {title[:72]}")
+                    print("Use /resume <number>." if sessions else "No saved sessions yet.")
+                    print()
+                    continue
+                if command == "/resume" and argument:
+                    selected = argument
+                    if argument.isdecimal():
+                        number = int(argument)
+                        if not 1 <= number <= len(listed_ids):
+                            raise ValueError("Use /sessions, then /resume with a listed number.")
+                        selected = listed_ids[number - 1]
+                    with Store(_state_path(args.state)) as store:
+                        goal = store.goal(selected)
+                    if goal["status"] == "cancelled":
+                        raise ValueError("This session is cancelled. Use /new to start another.")
+                    goal_id = selected
+                    last_status = 0
+                    print(_terminal_text(f"\nResumed: {' '.join(goal['outcome'].split())[:72]}"))
+                    print("Saved requests and artifacts are available. Type to continue.")
+                    if goal_id not in stages and not args.source_dir:
+                        print("Local files need an explicit --source-dir or artifact selection after reopening.")
+                    print()
+                    continue
+                if command == "/status" and not argument:
+                    if goal_id is None:
+                        print("\nNew session; nothing saved until your first request.\n")
+                    else:
+                        _chat_status(args.state, goal_id, stages.get(goal_id))
+                    continue
+                raise ValueError("Unknown command or arguments. Use /help.")
+
+            text = _required_text(text, None, "request")
+            with Store(_state_path(args.state)) as store:
+                if goal_id is None:
+                    goal_id = store.create_goal(text)["id"]
+                else:
+                    # A new explicit request resumes paused work, but never
+                    # carries an old effect grant into the conversational UI.
+                    store.request(goal_id, text, control="draft")
+            run_args = argparse.Namespace(**vars(args))
+            if goal_id in stages:
+                run_args.source_dir = stages[goal_id]
+                run_args.artifact = run_args.artifact_id = run_args.artifact_name = None
+                run_args.artifact_path = None
+            print("\nWorking…", flush=True)
+            try:
+                result = _run_existing(args.state, goal_id, run_args)
+            except CLICancelled as exc:
+                result = exc.payload
+            if result.get("stage_dir"):
+                # Only paths returned by this process are automatically copied.
+                # Imported receipts must never select host directories to read.
+                stages[goal_id] = result["stage_dir"]
+            status = result.get("status", "failed")
+            last_status = 0 if status == "finished" else 130 if status == "cancelled" else 1
+            reply = result.get("result") or "No response text returned."
+            print(_terminal_text(f"\n{reply}\n"))
+            if status != "finished":
+                print(_terminal_text(f"Run {status}. Request and any completed work are saved."))
+                print("Send a follow-up to continue, /status for details, or /new.\n")
+        except Exception as exc:
+            last_status = 1
+            print(_terminal_text(f"\nError: {exc}\n"))
+
+
 def _add_state_option(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state", dest="state", default=argparse.SUPPRESS, help="workspace state directory")
 
@@ -900,9 +1052,13 @@ class _CLIArgumentParser(argparse.ArgumentParser):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = _CLIArgumentParser(prog="python -m goal_native", description="Goal Native local JSON controller")
+    parser = _CLIArgumentParser(prog="python -m goal_native", description="Goal Native: open a session, or use a JSON command")
     parser.add_argument("--state", default=".state", help="workspace state directory")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_worker_options(parser)
+    subparsers = parser.add_subparsers(dest="command")
+    chat = subparsers.add_parser("chat", help="open a session; goals are handled automatically")
+    _add_state_option(chat)
+    _add_worker_options(chat)
     for command in ("login", "logout", "auth-status", "models"):
         auth_parser = subparsers.add_parser(command, help=f"Codex subscription {command} through pi")
         auth_parser.add_argument("--auth-file", help="pi-format OAuth store; default ~/.config/goal-native/auth.json")
@@ -1022,6 +1178,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_state_option(serve)
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--model", default=None)
+    # Shared options before a command must not be replaced by that command's
+    # defaults (especially an explicit provider/model/auth-file selection).
+    shared = {action.dest for action in parser._actions} - {"command", "help"}
+    for command_parser in subparsers.choices.values():
+        for action in command_parser._actions:
+            if action.dest in shared:
+                action.default = argparse.SUPPRESS
     return parser
 
 
@@ -1040,8 +1203,12 @@ def _emit(payload: Any) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    interactive = False
     try:
         args = build_parser().parse_args(argv)
+        interactive = args.command in {None, "chat"}
+        if interactive:
+            return _chat(args)
         payload, status = _dispatch(args)
         _emit(payload)
         return status
@@ -1055,7 +1222,10 @@ def main(argv: list[str] | None = None) -> int:
         _emit({"status": "cancelled", "result": "CLI interrupted by Ctrl-C", "exit_code": 130})
         return 130
     except Exception as exc:
-        _emit({"error": str(exc), "type": exc.__class__.__name__})
+        if interactive:
+            print(_terminal_text(f"Error: {exc}"), file=sys.stderr)
+        else:
+            _emit({"error": str(exc), "type": exc.__class__.__name__})
         return 1
 
 

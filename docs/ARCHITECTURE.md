@@ -41,7 +41,7 @@ matched-output-budget performance comparison.
 
 Before each actual model request, persist its admitted context and current input/contract/assignment identity. Associate every resulting tool request with that invocation—not a later global acknowledgment. Capture raw completed messages and usage, preserve unknown usage, and count every turn. A concurrent request invalidates old effects even if pi is still streaming. Abort is best-effort transport cancellation; runtime fencing is the authority guarantee.
 
-The bridge must fail closed on process death, protocol mismatch, missing packages or model errors. Its protocol is not exposed to arbitrary worker code. Task subprocesses cannot read controller DB, credentials, bridge handles or host network. An explicit model is required; no model substitution.
+The bridge must fail closed on process death, protocol mismatch, missing packages or model errors. Its protocol is not exposed to arbitrary worker code. Task subprocesses cannot read controller DB, credentials, bridge handles or host network. Worker execution receives an explicit model; the interactive CLI selects its documented Codex/Luna default unless overridden. No model substitution or billing fallback.
 
 The final serialized provider payload is admitted and recorded through pi's
 `onPayload` hook before HTTP submission. Normalized accounting comes from
@@ -66,5 +66,12 @@ The full pi coding-agent is a natural operational baseline, retaining its normal
 ## Context selection
 
 The compiler includes the faithful current contract/request stream and explicitly recorded open questions, blockers and assumptions before optional material. It selects at most 64 recent candidate bundles and two historical invocation observations, retaining input links and recorded qualifications/contradictions together. Oversized optional bundles are omitted, not stripped of caveats; a bounded artifact directory and `read_artifact` support retrieval. Prior compiled-context artifacts are not recursively copied into new prompts.
+
+The latest request also appears as the final user message, with explicit
+precedence over conflicting older requests/original outcome. Compatible
+constraints remain binding. Its repeated text is included in admission;
+this improves request salience, not semantic verification or automatic
+rewriting of the persisted goal. The terminal's session is simply the selected
+goal, with no second transcript database or administrative model stage.
 
 The soft task-material target is 8,000 conservative estimated tokens, not a quota. Admission uses UTF-8 byte length rather than an optimistic characters-per-token average, plus output/schema/framing reserves, on every actual request. This text-only profile does not claim exact provider tokenization or multimodal admission. Required material exceeding the hard profile fails visibly.

@@ -2,9 +2,9 @@
 
 **Persistent intent. Reusable work. Controlled effects.**
 
-A local-first AI execution environment where the workspace is a goal—not a conversation. It keeps requirements, revisions, artifacts, observations and acceptance separate, so an interrupted task can leave useful work behind without silently granting an old agent permission to act.
+A session-first, local AI CLI. Open it and type a request; durable goals, changing requirements and reusable work are handled underneath. An interrupted task can leave useful work behind without silently granting an old agent permission to act.
 
-**Status: CLI-first; live Luna subscription execution and changed-requirement continuation exercised.** This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) distinguishes live CLI/OS execution from protocol fixtures. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocol](docs/EVALUATION.md) govern broader claims.
+**Status: session-first terminal with live Luna execution and follow-up continuation exercised.** No manual goal creation is needed. This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) retains both a failed follow-up and its context-precedence repair. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocol](docs/EVALUATION.md) govern broader claims.
 
 ## Run locally
 
@@ -14,16 +14,54 @@ Python 3.11+ and Node.js 22.19+. The controller uses Python's standard library; 
 git submodule update --init --recursive
 npm run bootstrap:upstream
 python3 -m goal_native login
-python3 -m goal_native models
-python3 -m goal_native doctor --model gpt-6-luna
+python3 -m goal_native
 ```
 If the system Python is older, use the project environment (for example
 `.venv/bin/python`) or `uv run --no-project --python 3.12 python -m goal_native`.
 
-The standalone CLI is the primary local entry point. Lifecycle commands emit
-one JSON value on stdout; errors are JSON too. The optional `serve` command
-retains its server startup line. Options may be placed after the command,
-including `--state`, so these lifecycle operations are pipe-friendly:
+### Just start a session
+
+The bare command opens a fresh prompt using **Codex / gpt-6-luna**. There is no
+goal form, goal ID or model call before the first request. Type what you want;
+the CLI saves the exact request, creates the backing goal and runs it. Follow-up
+requests stay in the same session and take precedence over conflicting older
+requests, while compatible constraints remain in context.
+
+```text
+Goal Native  /  gpt-6-luna  /  openai-codex
+New session. Just type a request; goals are saved automatically.
+
+> Write a small Python script that totals these numbers…
+```
+
+- `/new`: start fresh on the next request; it does not create empty records.
+- `/sessions`, then `/resume 1`: reopen saved work without running it yet.
+- `/status`: inspect the backing goal, last recorded run and current local stage.
+- `/help`, `/exit`: commands and exit. Ctrl-C stops an active run and returns
+  to the prompt; at the prompt it clears input. End a line with `\` for multiline input.
+
+`chat` explicitly opens the same interface. `--model`, `--state`, `--source-dir`,
+`--context-budget` and the existing worker limits also work with the bare command
+or after `chat`. Source-checkout installations expose the same entry point as
+`goal-native` (for example `.venv/bin/goal-native`).
+
+No background planning agent, daemon or extra goal-generation model call:
+one session maps to one existing durable goal. Runs stay draft-only; sending
+another request also revokes any prior effect grant. Opening a session does not
+run, approve or resume paused work until you send a request.
+
+Files carry forward into a **fresh isolated stage** between requests in the same
+CLI process. After restarting, saved requests/artifacts remain available, but
+local files need explicit `--source-dir` or artifact selection. Imported run
+receipts never automatically select host directories. The CLI does not read
+your current directory unless selected. Responses currently appear at the end
+of a run; streaming/progress is the next UI improvement.
+
+### Automation and advanced controls
+
+Explicit lifecycle commands still emit one JSON value on stdout, including
+errors. They are optional controls, not onboarding steps. `serve` retains its
+startup line. Options may be placed after the command, including `--state`:
 
 ```sh
 python3 -m goal_native create --state .state "Prepare a local report"
@@ -76,14 +114,14 @@ limitations and versions. Summary output omits provider traces, context
 artifacts and artifact bodies, but tool receipts can contain source/output:
 **it is not a redacted or fixed-size export**. Full `show` retains raw traces.
 
-`--context-budget` applies to `run`, `resume` and `ask`; default **16384** is
+`--context-budget` applies to interactive sessions, `run`, `resume` and `ask`; default **16384** is
 unchanged. It is a conservative UTF-8-byte token ceiling including reserves,
 not actual billed tokens. Explicitly raising it permits a larger request;
 model-window checks, round/time limits and mandatory-context admission remain.
 The live continuation check needed **32768** after exhausting the default.
 No silent truncation, automatic retry or Codex output-token cap is introduced.
 
-The basic live CLI gate is satisfied. The optional server is preserved; its goal-centered UI is the next workstream, not a finished UI release:
+The optional browser interface still exposes the older goal-centered controls; it has not received the session-first redesign:
 
 ```sh
 python3 -m goal_native serve --state .state --port 8765
@@ -161,7 +199,7 @@ Correctness scenarios and mocked transport tests are **not** token-performance e
 | `bridge/` | Pinned pi agent-core/provider integration, streaming and loop hooks |
 | `goal_native/worker.py` | Controller bridge, invocation capture and restricted tool dispatch |
 | `goal_native/sandbox.py` | Restricted staged execution |
-| `goal_native/cli.py` | Standalone JSON CLI over the canonical Store/Worker |
+| `goal_native/cli.py` | Session-first terminal and JSON lifecycle commands over the canonical Store/Worker |
 | `goal_native/server.py`, `web/` | Optional localhost API and goal-centered browser interface |
 | `evaluation/`, `tests/` | Lifecycle evaluation and behavioral boundaries |
 

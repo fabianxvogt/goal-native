@@ -419,6 +419,78 @@ class CLISubprocessTests(unittest.TestCase):
             self.assertEqual("paused", shown["status"])
             self.assertFalse(any(item["status"] == "running" for item in shown["invocations"]))
 
+    def test_chat_navigation_does_not_create_work_or_revive_cancelled_goals(self) -> None:
+        from goal_native.store import Store
+
+        with tempfile.TemporaryDirectory(prefix="goal-native-chat-navigation-") as temporary:
+            state = Path(temporary) / "state"
+            empty = subprocess.run(
+                [sys.executable, "-m", "goal_native", "--state", str(state)],
+                input="/new\n/help\n/exit\n", cwd=ROOT,
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(0, empty.returncode, empty.stdout + empty.stderr)
+            self.assertFalse(state.exists())
+            with Store(state) as store:
+                goal = store.create_goal("Existing work")
+                store.request(goal["id"], "Permit mock effects", control="allow_effects")
+                cancelled = store.create_goal("Cancelled work")
+                store.request(cancelled["id"], "Stop", control="cancel")
+                before = store.export()
+            opened = subprocess.run(
+                [sys.executable, "-m", "goal_native", "chat", "--state", str(state)],
+                input=f"/sessions\n/resume {goal['id']}\n/status\n"
+                      f"/resume {cancelled['id']}\n/new\n/exit\n",
+                cwd=ROOT, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(0, opened.returncode, opened.stdout + opened.stderr)
+            with Store(state) as store:
+                after = store.export()
+                for key in ("goals", "requests", "assignments", "invocations", "artifacts"):
+                    self.assertEqual(before["records"][key], after["records"][key])
+
+    def test_chat_setup_failure_keeps_requests_and_can_continue_after_reopening(self) -> None:
+        from goal_native.store import Store
+
+        with tempfile.TemporaryDirectory(prefix="goal-native-chat-failure-") as temporary:
+            environment = dict(os.environ, HOME=temporary)
+            environment.pop("CHAT_UNSET_TEST_KEY", None)
+            arguments = [
+                sys.executable, "-m", "goal_native", "--state", temporary,
+                "--provider", "openai", "--model", "gpt-4.1-mini",
+                "--api-key-env", "CHAT_UNSET_TEST_KEY", "chat",
+            ]
+            failed = subprocess.run(
+                arguments, input="Keep this exact request\\\nand this line\n/exit\n",
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(1, failed.returncode)
+            with Store(temporary) as store:
+                goal, = store.list_goals()
+                self.assertEqual("Keep this exact request\nand this line", goal["outcome"])
+                store.request(goal["id"], "Pause", control="pause")
+            continued = subprocess.run(
+                arguments, input="/sessions\n/resume 1\nContinue without effects\n/exit\n",
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(1, continued.returncode)
+            with Store(temporary) as store:
+                saved = store.goal(goal["id"])
+                self.assertEqual("Continue without effects", saved["requests"][-1]["text"])
+                self.assertEqual(3, len(saved["requests"]))
+                self.assertEqual("draft", saved["status"])
+                self.assertFalse(saved["effects_allowed"])
+                self.assertEqual([], saved["invocations"])
+                self.assertEqual([], saved["acceptances"])
+
+    def test_terminal_output_neutralizes_untrusted_control_sequences(self) -> None:
+        from goal_native.cli import _terminal_text
+
+        self.assertEqual(
+            "safe[2J]52;c;clipboard\n\ttext",
+            _terminal_text("safe\x1b[2J\x1b]52;c;clipboard\x07\n\ttext\r\x9b"),
+        )
+
     def test_parser_errors_and_nonfinite_max_time_are_json(self) -> None:
         invalid_command = self.run_cli("not-a-command", expected=2)
         self.assertEqual("ArgumentError", invalid_command["type"])

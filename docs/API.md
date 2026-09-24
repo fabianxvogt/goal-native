@@ -27,6 +27,21 @@ All returned objects JSON-compatible dictionaries/lists. IDs strings, timestamps
 
 Supported tools: staged read/write/search/run, save_artifact and optional finding. No approve/verify trusted/commit/authority tools. Worker may prepare candidate, not authorize it. Tool results untrusted data. Staged files ONLY; reject symlinks, path escape and credential/controller paths. Arbitrary code must execute in verified OS sandbox or fail closed. Context compilation includes faithful request/constraints and known qualifications, hard admission including schema/history/output reserve, no silent required truncation. No provider credentials in task-tool environment. Persist actual model exchange for auditable capture cost. Pi integration must execute the real provider; fake transports are correctness-test fixtures only. No default pi host shell, ambient extension discovery or automatic compaction/model maintenance calls.
 
+Bare CLI invocation and `chat` open a terminal session, defaulting to Codex
+`gpt-6-luna` only for that interface. JSON `run`/`resume`/`ask` still require
+explicit models. The first submitted request calls `create_goal`; subsequent
+requests call `request(..., control="draft")`, then the existing Worker path.
+`/new` allocates nothing; `/resume` selects existing work without executing or
+changing authority. Cancelled goals cannot reopen. Sending a new request can
+resume paused work, but cannot grant effects.
+
+Same-process stages are copied through existing admission into new per-run
+directories. Persisted/imported receipt paths are not automatically reopened.
+The context compiler retains the complete request stream and supplies the
+latest request as the final user message, with explicit chronological precedence
+over conflicting earlier requests. Original outcome/revision records are not
+rewritten by the UI. All supplied text still counts toward admission.
+
 CLI subscription commands are `login`, `logout`, `auth-status`, and `models`.
 They delegate to the cloned pi OAuth and credential-store implementations;
 tokens never pass through Python JSON results or workspace records. Login
@@ -47,8 +62,8 @@ does not certify assignment liveness or acceptance. Provider traces and context
 artifact bodies are omitted; tool results/parameters remain untrusted task
 content and may be large. Full `show` is unchanged.
 
-After a Worker returns with an invocation ID, CLI `run`/`resume`/`ask` records
-the returned outcome as a `controller.cli.run` receipt on that invocation.
+After a Worker returns with an invocation ID, CLI interactive requests and
+`run`/`resume`/`ask` record the outcome as a `controller.cli.run` receipt.
 Parameters preserve model/provider/context/round/time selections; the result
 includes local stage path and input manifest. One finished provider invocation
 can precede a failed/interrupted whole run; do not infer run success from it.

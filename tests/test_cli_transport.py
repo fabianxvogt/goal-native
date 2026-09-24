@@ -141,6 +141,49 @@ class CLITransportTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_chat_creates_goals_lazily_and_keeps_followups_in_one_session(self):
+        server = ThreadingHTTPServer(('127.0.0.1', 0), ResponsesFixture)
+        server.requests = []
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory(prefix='goal-native-chat-') as temporary:
+            state = Path(temporary) / 'state'
+            source = Path(temporary) / 'selected'
+            source.mkdir()
+            (source / 'note.txt').write_text('Selected source', encoding='utf-8')
+            environment = dict(os.environ, HOME=temporary,
+                               OPENAI_API_KEY='TRANSPORT_FIXTURE_NOT_A_SECRET',
+                               OPENAI_BASE_URL=f'http://127.0.0.1:{server.server_port}/v1')
+            result = subprocess.run(
+                [sys.executable, '-m', 'goal_native', '--state', str(state),
+                 '--provider', 'openai', '--model', 'gpt-4.1-mini',
+                 '--source-dir', str(source), 'chat'],
+                input='/new\nSave useful work\nUse that saved work\n/new\nUnrelated task\n/exit\n',
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=45)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            with Store(state) as store:
+                first, second = store.list_goals()
+                self.assertEqual(first['outcome'], 'Save useful work')
+                self.assertEqual(second['outcome'], 'Unrelated task')
+                detail = store.goal(first['id'])
+                self.assertEqual([r['text'] for r in detail['requests']],
+                                 ['Save useful work', 'Use that saved work'])
+                self.assertFalse(detail['effects_allowed'])
+                self.assertEqual(detail['acceptances'], [])
+                self.assertEqual([r['text'] for r in store.goal(second['id'])['requests']],
+                                 ['Unrelated task'])
+                runs = [r['result'] for invocation in detail['invocations']
+                        for r in invocation['receipts'] if r['tool'] == 'controller.cli.run']
+                self.assertEqual([r['status'] for r in runs], ['finished', 'finished'])
+                self.assertNotEqual(runs[0]['stage_dir'], runs[1]['stage_dir'])
+                self.assertEqual((Path(runs[1]['stage_dir']) / 'note.txt').read_text(),
+                                 'Selected source')
+            # The actual second user run receives saved work; a new session does not.
+            self.assertEqual(len(server.requests), 4)
+            self.assertIn('Useful saved transport-fixture work', json.dumps(server.requests[2]))
+            self.assertNotIn('Useful saved transport-fixture work', json.dumps(server.requests[3]))
+
 
 if __name__ == '__main__':
     unittest.main()

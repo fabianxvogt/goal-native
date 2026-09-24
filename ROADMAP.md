@@ -2,26 +2,37 @@
 
 ## Now
 
-**State: CLI live Luna execution and bounded continuation verified.** Classification: `INCREMENTAL / EMPIRICAL`
-for the exercised controller and protocol behavior; no model-quality,
-comparative token-efficiency, novelty or general AI-safety claim.
+**State: session-first CLI; automatic background goal bookkeeping.**
+Classification: `INCREMENTAL / EMPIRICAL` for exercised behavior, not a
+quality, efficiency, novelty or general AI-safety claim.
 
-- Preserve the exercised CLI workflow: inspect work separately from acceptance,
-  continue from immutable artifacts and explicitly select larger context budgets.
-- Retain the failed default-budget attempt and successful recovery in
-  [verification](docs/VERIFICATION.md); no automatic retries or efficiency claim.
-- Next product work can revisit the goal-centered interface; basic live login
-  is no longer a blocker. This checkpoint did not change UI or other providers.
+- Bare CLI opens a clean prompt. First request creates the goal; follow-ups
+  reuse it. `/new`, `/sessions`, `/resume` and `/status` hide lifecycle plumbing.
+- Keep one Store and Worker, no goal-inference agent, daemon or new session DB.
+- Current requests are explicit model input, not buried beneath the original
+  outcome. Retain the failed live follow-up and passing repair in
+  [verification](docs/VERIFICATION.md); provider completion is not task correctness.
 
 ## Next
 
-- Revisit the preserved goal-centered interface using the now-exercised CLI workflow.
-- Implement the comparable native-pi session baseline before executing the
-  registered lifecycle comparison. Current canonical controls are collapsed,
-  not four distinct architectures.
-- Retain independent outcome assessments, complete usage and failures. If
-  shared tooling or flat persistence explains a gain, do not credit hierarchy.
-- Other subscription providers remain lower priority than completing the goal-centered workflow.
+1. **Terminal feedback:** stream responses and show one compact current-tool/
+   working line. Keep traces, goal metadata and acceptance controls out of the
+   default view. Preserve a reliable stop/continue path.
+2. **Reopen without file bookkeeping:** safe local-stage continuation across CLI
+   restarts, with explicit missing-stage recovery. Never follow imported paths
+   as authority to read host files. Same-process carry-forward already works.
+3. **Budget recovery:** expose remaining headroom and an actionable explicit
+   continuation choice. No silent budget expansion or dropped constraints.
+4. **Startup:** reliable source install and a short launch command; Python,
+   Node and the pinned pi build are still prerequisites. A wheel alone is not
+   a complete distribution.
+5. **Browser, only after the CLI loop is comfortable:** one composer, session
+   list and result view; move goal/evidence/effect forms behind details.
+
+Keep wider provider coverage, goal taxonomies, parallel-agent orchestration
+and new effect adapters out of this UI pass. The native-pi comparison baseline
+and independent lifecycle assessment remain required before efficiency claims,
+not prerequisites for a useful CLI.
 
 ## Later
 
@@ -51,10 +62,16 @@ comparative token-efficiency, novelty or general AI-safety claim.
   do not imply successful runs or acceptance.
 - CLI `--context-budget` reuses canonical admission; run outcome receipts
   preserve stage recovery metadata. 33 focused model-free checks passed.
+- Session-first CLI; lazy creation, persisted request/artifact reopening,
+  draft-only follow-ups, multiline input, terminal-control filtering and
+  same-process file carry-forward. 61 application checks passed.
+- Actual terminal and live Luna follow-up: original `55`, a retained stale
+  `55` failure, then `210` after latest-request precedence repair. Synthetic
+  provider cancellation returned to the prompt with paused/fenced work.
 
 ## Release record
 
-- Source destination: [fabianxvogt/goal-native](https://github.com/fabianxvogt/goal-native) — CLI-first source with basic live Luna acceptance and bounded continuation evidence.
+- Source destination: [fabianxvogt/goal-native](https://github.com/fabianxvogt/goal-native) — session-first CLI source with bounded live Luna continuation evidence.
 - Try it: local only; the controller processes private work and arbitrary code, so a public shared-host service is not appropriate.
 - Runtime: Python 3.11+; isolation support and exact tested OS recorded in evidence.
 - Persistence/export: SQLite + immutable artifacts; portable versioned JSON, import into empty state only.

@@ -2,13 +2,81 @@
 
 Classification: **INCREMENTAL / EMPIRICAL**. These are implementation and
 protocol observations, not model-quality, efficiency or general safety proofs.
-This checkpoint remains CLI-first; browser UI and other providers were not changed.
+This checkpoint remains CLI-first; the browser interface and other providers were not redesigned.
 
 ## Exercised environment
 
 Darwin 25.5 / arm64; Python 3.12.12; Node 22.23.2. Pi source is the submodule
 at `a7d17e39aaa0091c7573d0790714751956f10bd1`, package version `0.87.1`.
 `npm run build:upstream` passed, including the cloned credential-store build.
+
+## Session-first terminal checkpoint
+
+Bare invocation now opens a fresh interactive session; the first request creates
+its durable goal. This is controller bookkeeping, not another model call.
+Existing JSON lifecycle commands remain available. No Store schema, daemon or
+effect adapter was added.
+
+**61 application tests passed** with ResourceWarning treated as an error
+(`.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -v`).
+New boundaries cover lazy creation/navigation, cancelled-session
+rejection, exact multiline requests retained after setup failure, reopening
+paused work without effect authority, terminal-control neutralization, and the
+actual CLI → pi → HTTP path for follow-ups versus unrelated sessions.
+The initial test run had one new test-envelope error (`export.records`), repaired
+before the passing run; it was not an application failure.
+
+A separate option-precedence probe caught subparser defaults replacing explicit
+root provider/model choices. Shared subcommand defaults now inherit root values.
+The before/after probe changed from `openai-codex / None` to the explicitly
+selected `openai / explicit-model`; the installed CLI also reported the selected
+missing API credential rather than switching to subscription authentication.
+The real HTTP chat regression exercises these options before `chat` under an
+isolated home directory. Bare installed `.venv/bin/goal-native` also opened and
+exited without creating state.
+
+Actual pseudo-terminal, live **Codex / gpt-6-luna**, macOS sandbox, explicit
+32768 context ceiling:
+
+| Attempt | Observed result |
+| --- | --- |
+| New session, no goal command, 4 invocations | Wrote/executed `total.py` for integers 1–10, stdout `55`, saved exact source. |
+| Same-session follow-up, 3 invocations, before context repair | Requested 1–20 and copied the prior stage into a new isolated stage. The faithful new request reached the provider, but the model reran old source and returned `55`. Run status was `finished`: not correctness or acceptance. |
+| Reopened session, 5 invocations, after context repair | Explicitly selected the previous local stage and sent the same 1–20 request. Final user-message placement and chronological precedence produced updated source, stdout `210`, and a second immutable artifact. |
+
+All **12 live invocations** reported usage: **15,597 input + 386 output =
+15,983 total tokens**, including the incorrect follow-up. No comparative
+efficiency or general follow-up reliability inference. The context now repeats
+the latest request as the final user message; that input overhead is admitted
+and counted, not treated as free.
+
+The actual terminal showed readable replies and exercised `/status`,
+`/sessions`, `/new`, `/resume 1` and exit 0. Navigation made no additional goals.
+The goal remained **draft**, effects disabled, and acceptance empty.
+Separately, an actual pseudo-terminal with a local slow-provider protocol fixture
+exercised SIGINT during execution: returned to prompt, goal paused, invocation
+cancelled, no running invocation, `/status` available and exit 130. This fixture
+is not live-model cancellation evidence.
+
+Limits: no response streaming or full-screen/mouse UI; no browser visual
+verification in this pass. Same-process file carry-forward works; after process
+restart requests/artifacts reopen but local files still require explicit
+selection. Default budget remains 16384; the live scenario deliberately used
+32768. Prompt precedence is a model instruction, not a semantic correctness
+proof. The latest request does not rewrite the durable original outcome.
+Next check: stream a long response, stop it mid-tool, then continue from the
+same session without exposing traces or losing local work.
+
+### Independent session review
+
+`GoalNativeSessionReview`, resolved runtime `openai-codex/gpt-5.6-luna` at
+`xhigh`, reviewed the settled diff and retained execution evidence. Its
+provider/model option-precedence blocker was fixed and separately re-reviewed;
+final result: **bounded approval, no remaining identified blocker**.
+It ran no tests or live requests. Execution proof belongs to the parent;
+the reviewer retained explicit-file-selection and model-correctness limits.
+Temporary synthetic workspaces were removed; no owner state or credentials
+were added to source publication.
 
 ## Live Luna continuation checkpoint
 
@@ -129,5 +197,6 @@ are fixture values, not measured model costs.
 4. The native-pi comparison adapter and matched-budget subscription evaluation
    remain outstanding. Collapsed controls, synthetic protocol responses and
    passing tests establish no comparative efficiency or model-quality gain.
-5. The preserved browser interface is not a finished UI release. Its next
-   implementation/verification pass is no longer blocked on basic live login.
+5. The browser still exposes manual goal creation and many controls. The CLI now
+   starts session-first; streaming, automatic local-stage reopening and simpler
+   budget recovery remain the next product gaps.

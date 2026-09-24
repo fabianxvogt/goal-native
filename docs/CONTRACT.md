@@ -6,6 +6,12 @@ Source: owner-supplied consolidated proposal, 2026-09-24. This is its implementa
 
 Audience: people directing coding, document/data, research and authorized application work across interruptions and changing requirements. The useful result is a persistent outcome with recoverable products, attributable evidence and explicit delivery state—not a reconstructed conversation.
 
+Owner interface direction, 2026-09-24: session-first CLI. Opening the app should
+present a request prompt, not goal setup. First requests create goals and
+follow-ups update the request stream in the background. Goal/evidence/delivery
+details remain inspectable, not mandatory onboarding. Reuse the existing
+controller; no bookkeeping-only model stages or separate session database.
+
 One local controller owns a transactional SQLite store, content-addressed artifacts, a bounded context compiler, an owned provider loop and controlled tools. One workspace per state directory. No recurring hosted service or inference subsidy. The default is draft-only; effects are limited to a local mock application. Source publication does not imply production-security certification.
 
 ## Required semantics
