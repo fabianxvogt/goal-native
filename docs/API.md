@@ -3,7 +3,10 @@
 All returned objects JSON-compatible dictionaries/lists. IDs strings, timestamps UTC. `Store(root)` creates a state directory and SQLite database containing content-addressed immutable artifacts. Store owns one workspace. Methods below are the integration contract; optional extra fields are permitted. All IDs checked for workspace ownership (one DB). Store is a trusted controller API, never exposed as an arbitrary model/plugin object; untrusted task code runs outside the controller's OS boundary.
 
 - `create_goal(outcome, parent_id=None, kind='outcome', criteria='', constraints='') -> goal` with id, outcome, revision, input_version, authority_version, status, kind, parent_id. Preserve original request.
-- `list_goals() -> list[goal]`; `goal(goal_id) -> goal` enriched with requests, artifacts, invocations, runs, effects, events, acceptances.
+- `list_goals() -> list[goal]`; `session_summaries() -> list[dict]` projects
+  goal ID/title/status and latest run status/reason for terminal navigation
+  without copying artifacts or traces; `goal(goal_id) -> goal` returns
+  requests, artifacts, invocations, runs, effects, events and acceptances.
 - `request(goal_id, text, control=None) -> goal`: immediately increments input_version; control one of pause/cancel/draft/resume or None. Never model-authorized. Default draft-only authority; explicit user `control='allow_effects'` grants mock destination only.
 - `revise(goal_id, expected_revision, outcome, criteria, constraints) -> goal`: trusted human operation; CAS revision; request/input fence included.
 - `assign(goal_id) -> assignment`: fences predecessor assignment, fields id, goal_id, authority_version. Refuse paused/cancelled.
@@ -13,6 +16,10 @@ All returned objects JSON-compatible dictionaries/lists. IDs strings, timestamps
 - `receipt(invocation_id, tool, parameters, result, note='') -> receipt`: preserves full result, producer and exact parameters, note explicitly worker assertion.
 - `usage(invocation_id, usage_dict)`: record provider raw and normalized usage without reasoning/cache double count; unknown remains null, not zero.
 - `finish(invocation_id, status, result='')`: status finished/failed/cancelled/interrupted; no acceptance implied.
+- `assert_invocation_current(invocation_id)`: admit a new controlled tool dispatch
+  only while its invocation is running and its goal/assignment fences remain
+  current. A finished invocation can still supply historical evidence for
+  separate trusted acceptance/effect checks; it cannot start another tool action.
 - `start_run(goal_id, assignment_id, limits) -> run`: durable attempt before context compilation, bound to an active assignment; no invocation required.
 - `record_run_admission(run_id, admission)` / `bind_run_invocation(run_id, invocation_id)`: retain controller admission estimates and the exact assignment's invocation.
 - `finish_run(run_id, status, *, stop_reason=None, diagnostic=None, assistant_text='', admission=None, invocation_id=None, rounds=None) -> run`: persist the whole-run outcome independently of assistant text; unknown rounds remain null.
@@ -50,15 +57,19 @@ Repository tools share one controller-owned schema with the pi bridge:
 
 | Tool | Contract |
 | --- | --- |
-| `staged_read` | Optional 1-based inclusive `start_line`/`end_line`; exact Unicode/newlines, complete-file SHA256, range and continuation metadata. The complete file remains subject to the read cap. |
-| `staged_files` | Bounded file discovery with declared scope, snapshot identity, exclusions and truncation. |
-| `staged_search` / `staged_regex` | Literal or time-bounded regex search over a no-follow opened-file manifest. Regex runs in a killable helper, not the controller's regex engine. |
-| `staged_edit` | Required `expected_sha256`; unique `old_text` anchors or 1-based Unicode line/column ranges with exclusive ends. All edits address the original file. Ambiguity, overlap and stale bytes reject before atomic replacement. |
+| `staged_read` | Prefer bounded 1-based inclusive `start_line`/`end_line`; exact Unicode/newlines, complete-file SHA256, range and continuation metadata. `max_bytes` limits the complete file, not the returned excerpt; lowering it cannot page a larger file. |
+| `staged_files` | List a regular file or discover a directory, with bounded scope, snapshot identity, exclusions and truncation. Returned paths are relative to the stage root, not the requested scope. |
+| `staged_search` / `staged_regex` | Literal or time-bounded regex search in a regular file or directory over a no-follow opened-file manifest. Prefer a file scope when known. Match paths are stage-relative and directly usable by `staged_read`. Regex runs in a killable helper, not the controller's regex engine. |
+| `staged_edit` | Required 64-hex `expected_sha256`, copied in full from the latest read/edit result—not a discovery manifest ID. Unique `old_text` anchors or 1-based Unicode line/column ranges with exclusive ends. All edits address the original file. Ambiguity, overlap and stale bytes reject before atomic replacement. |
 | `staged_write` | Explicit new-file/whole-file replacement; prefer hash-bound edits for existing code. |
 | `read_receipt` | Same-goal task-tool receipts only; exact JSON paged by `offset_chars` and `max_chars`, with hash, original invocation versions and historical-only qualification. Provider/controller receipts are not exposed. |
 | `staged_run` | Default macOS Python profile only; fixed interpreter and restricted staged entry script. |
 | `staged_command` | Docker profile replaces `staged_run`: direct `argv`, optional `timeout_seconds` and `network`. Commands run at `/workspace`; a shell must be an explicit argv program. Network needs both controller permission and this command's request. Receipt binds before/after candidate hashes, immutable image, exit/timeout/cancel/output-limit state and publication. |
 | `staged_language` | Docker only: `action` = `definition`, `references` or `diagnostics`, staged `path`, optional 1-based Unicode `line`/`column`. Real Python/TypeScript servers run offline with publication disabled. Complete results bind the queried candidate/image; unavailable, malformed or incomplete responses are errors, never invented clean diagnostics. |
+
+For the three discovery/search tools, omitted `path`, `path: "."` and
+`path: ""` all scope the staged root. File reads, edits and writes still
+require a non-empty file path; empty scope does not grant root-file access.
 
 Language `complete` means server analysis completed, not that an arbitrarily
 large result set fits the response. `truncated` and omitted counts disclose
@@ -88,10 +99,15 @@ replacements are atomic, but a multi-file stage update is not one transaction.
 `ContainerRuntime.cancel()` is terminal for that runtime; continuation constructs
 a fresh runtime over a fresh copied stage.
 
-Bare CLI invocation and `chat` open a terminal session, defaulting to Codex
-`gpt-6-luna` only for that interface. JSON `run`/`resume`/`ask` still require
-explicit models. The first submitted request calls `create_goal`; subsequent
-requests call `request(..., control="draft")`, then the existing Worker path.
+Bare CLI invocation and `chat` open a session; supported interactive TTYs use
+the pinned Pi TUI editor, Markdown renderer and a live, labeled goal-light
+panel. The Node renderer carries display events and submitted text only; the
+Python controller alone owns Store, Worker and cancellation/fencing. A finished
+run is labeled for review, not accepted. Non-TTY and dumb terminals retain the
+line-oriented interface; JSON commands never start the TUI. Interactive
+sessions default to Codex `gpt-6-luna`; JSON `run`/`resume`/`ask` still require
+an explicit model. First text submission calls `create_goal`; follow-ups call
+`request(..., control="draft")`, then the existing Worker path.
 `/new` allocates nothing; `/resume` selects existing work without executing or
 changing authority. Cancelled goals cannot reopen. A new request or explicit
 `/continue` can resume paused work, but cannot grant effects. `/continue` does

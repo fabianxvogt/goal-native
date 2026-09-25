@@ -6,9 +6,13 @@ A session-first, local AI CLI. Open it and type a request; durable goals, changi
 
 **Status: repo-aware coding tools, optional isolated Python/TypeScript commands and language servers, resumable work, and reviewed code export.** No manual goal creation is needed. This implements the owner-supplied *Goal-Native, Incremental AI Harness* proposal without claiming a quality, reliability or token-efficiency improvement. [Observed verification](docs/VERIFICATION.md) separates live coding, isolation probes and synthetic protocol fixtures. The [acceptance contract](docs/CONTRACT.md) and [evaluation protocols](docs/EVALUATION.md) govern broader claims.
 
-Coding quality is not established: the bounded historical pilot still had no
-finished phases after harness repairs. The verification record retains failed
-attempts and independent checks; it is not a “best coding agent” benchmark.
+Coding quality is not established. The historical matched pilot had no finished
+phases; later setup/budget controls and two fresh small CLI workflows produced
+passing delivered candidates, including explicit recovery and a review-driven
+repair. Three existing-repository deliveries now add a checker fix, supplied genome
+tracks and a structured/color-aware CLI. They required review feedback, explicit
+Luna-to-Astra changes and disclosed parent integration fixes; they are not a
+“best coding agent” benchmark or evidence of general reliability.
 
 ## Run locally
 
@@ -23,12 +27,28 @@ python3 scripts/bootstrap.py
 ```
 
 Bootstrap initializes and checks the exact pinned pi revision, builds its runtime,
-creates `.venv`, and installs the Python entry point. It downloads npm dependencies
+creates `.venv`, and installs the Python entry point. If that validated checkout
+environment lacks `pip`, bootstrap provisions it offline with Python's bundled
+`ensurepip`; an existing working `pip` is left alone. It downloads npm dependencies
 and upstream model-catalog metadata, but performs no login or model call. It refuses
 to reset a dirty/unpinned pi checkout or install through an incomplete or external
 virtual environment. Follow its remediation instead of deleting user work.
 An older system Python needs an explicitly installed Python 3.11+
 (for example `python3.12 scripts/bootstrap.py`).
+
+To type **`goal`** from any directory, opt in to installing a small checkout
+launcher (without editing your shell configuration):
+
+```sh
+python3.12 scripts/bootstrap.py --install-command
+# Add ~/.local/bin to PATH if bootstrap says it is not already there.
+goal
+```
+
+`--bin-dir DIR` selects a different command directory. Installation refuses to
+replace an unrelated `goal` command or symlink; rerunning the same managed
+installation is safe. The command points at this checkout and requires it to
+remain in place.
 
 `doctor` verifies safe, clean, exactly pinned pi source before probing runtime
 imports. It separates runtime prerequisites from credentials and reports missing
@@ -45,7 +65,8 @@ build the reviewed runtime image explicitly, then select Docker execution:
 ```sh
 docker build -t goal-native-runtime:local runtime
 ./goal doctor --execution docker --container-image goal-native-runtime:local --model gpt-6-luna
-./goal --execution docker --source-dir /path/to/project --context-budget 65536
+./goal --execution docker --source-dir /path/to/project \
+  --max-rounds 32 --max-time 300 --context-budget 131072
 ```
 
 This profile adds `staged_command` and `staged_language` to the repository
@@ -54,6 +75,15 @@ and diagnostics come from real isolated language servers, not text-search guesse
 Every command gets a disposable container and the selected staged snapshot.
 There are no host mounts, controller credentials or Docker socket inside it.
 The original project is never overwritten; review and export the candidate.
+Discovery and search accept file or directory scopes. Use a known file path to
+avoid scanning unrelated files; returned paths can go directly to read/edit tools.
+
+The explicit limits above are the exercised small-project development profile,
+not new defaults or a guarantee of completion. Supply a runnable reproduction
+command with the correct interpreter/import/dependency paths. After a budget
+stop, inspect `/status` and use an explicit `/continue` if warranted; never
+equate a finished response with passing code. Review the diff and independently
+check the exported candidate. See [coding-gate evidence](docs/VERIFICATION.md#setup-budget-and-fresh-cli-gate--2026-09-25).
 
 Network is denied unless you start with `--allow-network` **and** the individual
 command requests it. Dependencies and generated build outputs do not survive
@@ -72,21 +102,38 @@ requests stay in the same session and take precedence over conflicting older
 requests, while compatible constraints remain in context.
 
 ```text
-Goal Native  /  gpt-6-luna  /  openai-codex
-New session. Just type a request; goals are saved automatically.
+Goal Native  /  persistent work, reviewed delivery
 
-> Write a small Python script that totals these numbers…
+Goals (2)  /goals · /resume N
+  ● 1. Repair the ledger
+    run finished / review · goal: draft · 394c11e4
+  ● 2. Investigate the compiler
+    paused · goal: paused · a6c68a17
+
+────────────────────────────────────────────
+gpt-6-luna · python · 16,384 context
+Enter send · Alt-Enter newline · Tab commands · Ctrl-D exit · draft only
 ```
 
+The illustration is representative: IDs, goal titles and statuses come from
+your own workspace. On an interactive supported terminal the pinned Pi TUI
+provides a multiline editor, command completion and rendered assistant Markdown.
+Goal lights update on request, run stop and selection; labels carry the same
+meaning without color. **Run finished / review is not goal acceptance.**
+Non-interactive, `TERM=dumb` and unknown terminals retain the line-oriented
+interface; JSON subcommands do not start the TUI.
+
 - `/new`: start fresh on the next request; it does not create empty records.
-- `/sessions`, then `/resume 1`: reopen saved work without running it yet.
+- `/goals` or `/sessions`, then `/resume 1`: inspect numbered goal lights,
+  latest run outcomes, goal states and titles; reopen without running yet.
 - `/status`: inspect goal state, last stop reason, recorded rounds and context headroom.
 - `/budget [N]`: inspect or explicitly set the session's context ceiling; no model call.
 - `/continue [--context-budget N --max-rounds N --max-time SECONDS]`: rerun the
   latest request from retained files, without inventing another request. Overrides
   apply to that run; `/budget` changes subsequent runs in the current CLI process.
-- `/help`, `/exit`: commands and exit. Ctrl-C stops an active run and returns
-  to the prompt; at the prompt it clears input. End a line with `\` for multiline input.
+- `/help`, `/exit`: commands and exit. In the Pi editor, Ctrl-C stops an active
+  run or clears input, Ctrl-D exits from an empty editor, and Alt-Enter inserts
+  a newline. The plain interface retains backslash-continued multiline input.
 
 `chat` explicitly opens the same interface. `--model`, `--state`, `--source-dir`,
 `--fresh`, `--context-budget` and the existing worker limits work with the bare command
@@ -98,10 +145,17 @@ one session maps to one existing durable goal. Runs stay draft-only; sending
 another request also revokes any prior effect grant. Opening a session does not
 run, approve or resume paused work until you send a request or explicitly `/continue`.
 
-Assistant replies stream as they arrive. One compact terminal line shows current
-tool activity; thinking blocks, raw tool results and traces stay out of the
-default view. Completed responses are not printed twice; Ctrl-C also retains
-visible partial assistant text separately from its cancellation diagnostic.
+Assistant replies stream as rendered Markdown under **Assistant**, with separate
+tool activity, errors and recovery guidance. The Pi TUI preserves terminal
+scrollback and redraws only changed lines. The plain interface wraps metadata
+for narrow terminals; assistant content and patches are not reformatted there.
+Color is TTY-only and disabled by `NO_COLOR`, `TERM=dumb` or an unknown terminal.
+Explicit automation commands remain plain JSON. Untrusted controls, thinking
+and raw traces stay out of the default view. Completed responses are not
+repeated; empty budget stops do not invent assistant replies. Ctrl-C retains
+visible partial text. If the Pi renderer dies during work, the controller
+cancels the run and restores the original POSIX terminal mode rather than
+relying on child cleanup.
 
 Files carry forward into a **fresh isolated stage**, including after restarting
 the CLI. `/resume` selects the session; a request or `/continue` restores its recorded

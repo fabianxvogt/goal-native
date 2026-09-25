@@ -25,25 +25,41 @@ class SubscriptionTests(unittest.TestCase):
             [sys.executable, '-m', 'goal_native', *map(str, arguments)],
             cwd=ROOT, env=environment, capture_output=True, text=True, timeout=20,
         )
-    @unittest.skipUnless(os.name == 'posix', 'requires a controlling terminal')
+    @unittest.skipUnless(os.name == 'posix', 'requires a pseudo-terminal')
     def test_login_ctrl_c_returns_cancelled_without_creating_credentials(self):
         import pty
         with tempfile.TemporaryDirectory() as directory:
             auth = Path(directory) / 'auth.json'
-            pid, terminal = pty.fork()
-            if pid == 0:
-                os.chdir(ROOT)
-                os.execv(sys.executable, [sys.executable, '-m', 'goal_native', 'login',
-                                         '--method', 'browser', '--auth-file', str(auth)])
+            terminal, slave = pty.openpty()
+            process = subprocess.Popen(
+                [sys.executable, '-m', 'goal_native', 'login',
+                 '--method', 'browser', '--auth-file', str(auth)],
+                cwd=ROOT, stdin=slave, stdout=slave, stderr=slave,
+                start_new_session=True,
+            )
+            os.close(slave)
             output = bytearray()
             interrupted = False
-            reaped = False
             try:
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline:
                     readable, _, _ = select.select([terminal], [], [], 0.1)
-                    if not readable:
-                        continue
+                    if readable:
+                        try:
+                            chunk = os.read(terminal, 65536)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        output.extend(chunk)
+                        if not interrupted and b'OpenAI Codex login URL:' in output:
+                            os.write(terminal, bytes([3]))
+                            interrupted = True
+                    if interrupted and process.poll() is not None:
+                        break
+                self.assertTrue(interrupted, 'upstream OAuth did not present its login URL')
+                self.assertEqual(130, process.wait(timeout=3), 'login did not terminate after Ctrl-C')
+                while select.select([terminal], [], [], 0.1)[0]:
                     try:
                         chunk = os.read(terminal, 65536)
                     except OSError:
@@ -51,26 +67,20 @@ class SubscriptionTests(unittest.TestCase):
                     if not chunk:
                         break
                     output.extend(chunk)
-                    if not interrupted and b'OpenAI Codex login URL:' in output:
-                        os.write(terminal, bytes([3]))
-                        interrupted = True
-                ended, status = os.waitpid(pid, os.WNOHANG)
-                self.assertEqual(ended, pid, 'login did not terminate after Ctrl-C')
-                reaped = True
-                self.assertTrue(interrupted, 'upstream OAuth did not present its login URL')
-                self.assertEqual(os.waitstatus_to_exitcode(status), 130)
                 text = output.decode('utf-8', 'replace').replace('\r\n', '\n')
                 result, _ = json.JSONDecoder().raw_decode(text[text.rfind('{'):])
                 self.assertEqual(result['status'], 'cancelled')
                 self.assertFalse(result['run_started'])
                 self.assertNotIn('openai-codex', json.loads(auth.read_text()) if auth.exists() else {})
             finally:
-                if not reaped:
+                if process.poll() is None:
                     try:
-                        os.killpg(pid, signal.SIGKILL)
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except PermissionError:
+                        process.kill()
                     except ProcessLookupError:
                         pass
-                    os.waitpid(pid, 0)
+                    process.wait(timeout=5)
                 os.close(terminal)
 
 

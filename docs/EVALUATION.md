@@ -298,6 +298,10 @@ the explicit existing Codex credential file (`--auth-file` can select another);
 worker commands remain offline. `--task ID` restricts preparation or execution
 to registered tasks. Failed attempts are retained, never overwritten or
 automatically retried. Preparation and run roots must be outside this repo.
+Native continuation validates the persisted session file within the selected
+session directory before opening it; repository/candidate aliases and symlinked
+credential/trace/session-file paths are rejected. These pre-open checks do not
+provide descriptor-level protection against a concurrent same-user path swap.
 
 The ten frozen issue tasks are five Python cases from pytest/Flask and five
 Prettier cases (four TypeScript behaviors and one Flow behavior; the formatter

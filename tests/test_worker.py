@@ -83,6 +83,63 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse((self.stage / 'late.txt').exists())
         self.assertEqual(self.store.goal(self.goal['id'])['invocations'][0]['status'], 'cancelled')
 
+    def test_finished_invocation_rejects_late_mutating_tool_dispatches(self):
+        class RecordingCommandRuntime:
+            def __init__(self, root):
+                self.root = root
+                self.allow_network = False
+
+            def command(self, _arguments):
+                (Path(self.root) / "late-command.txt").write_text("executed", encoding="utf-8")
+                return {"ok": True}
+
+            def cancel(self):
+                return None
+
+        cases = (
+            (
+                "staged_write",
+                {"path": "late-write.txt", "content": "should not exist"},
+                lambda: self.assertFalse((self.stage / "late-write.txt").exists()),
+            ),
+            (
+                "staged_command",
+                {"argv": ["sh", "-c", "echo should-not-run > late-command.txt"]},
+                lambda: self.assertFalse((self.stage / "late-command.txt").exists()),
+            ),
+            (
+                "save_artifact",
+                {"name": "late-artifact", "content": "should not persist", "limitations": "none"},
+                lambda: self.assertFalse(
+                    any(
+                        artifact.get("name") == "late-artifact"
+                        for artifact in self.store.artifacts(self.goal["id"])
+                    )
+                ),
+            ),
+        )
+        for tool, arguments, assert_unchanged in cases:
+            with self.subTest(tool=tool):
+                runtime = RecordingCommandRuntime(self.sandbox.root)
+                worker = Worker(
+                    self.store,
+                    "fixture-model",
+                    provider="openai",
+                    sandbox=self.sandbox,
+                    bridge=None,
+                    command_runtime=runtime,
+                )
+                fixture = InterruptedResponse(
+                    lambda: worker._finish_current("finished", "provider completed"),
+                    tool=tool,
+                    arguments=arguments,
+                )
+                worker.bridge = fixture
+                outcome = worker.run(self.goal["id"])
+                self.assertEqual(outcome["status"], "failed")
+                self.assertIsNone(fixture.tool_result)
+                assert_unchanged()
+
     def test_file_change_during_provider_turn_rejects_stale_edit(self):
         original = "answer = 'old'\n"
         current = "answer = 'human revision'\n"

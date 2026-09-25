@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -195,6 +198,86 @@ def _ensure_venv(python: str) -> str:
     return str(VENV_PYTHON)
 
 
+def _ensure_pip(venv_python: str) -> None:
+    """Provision pip offline only inside the validated checkout environment."""
+    present = _run(
+        [venv_python, "-I", "-c",
+         "import importlib.util; print(int(importlib.util.find_spec('pip') is not None))"],
+        label="virtual-environment pip detection",
+        remediation="repair pip in the checkout virtual environment and rerun bootstrap",
+        capture_output=True,
+    )
+    if present.stdout.strip() == "0":
+        _run(
+            [venv_python, "-I", "-m", "ensurepip", "--upgrade"],
+            label="offline virtual-environment pip installation",
+            remediation="use a Python 3.11+ installation with ensurepip, or install pip into this .venv",
+        )
+    elif present.stdout.strip() != "1":
+        raise BootstrapError("virtual-environment pip detection returned an invalid result; no package was installed.")
+    _run(
+        [venv_python, "-I", "-m", "pip", "--version"],
+        label="virtual-environment pip check",
+        remediation="repair pip in the checkout virtual environment and rerun bootstrap",
+        capture_output=True,
+    )
+
+def _install_command(bin_dir: Path) -> Path:
+    bin_dir = bin_dir.expanduser()
+    if not bin_dir.is_absolute():
+        bin_dir = Path.cwd() / bin_dir
+    if bin_dir.is_symlink():
+        raise BootstrapError(f"{bin_dir} is a symlink; it was not changed.")
+    if bin_dir.exists() and not bin_dir.is_dir():
+        raise BootstrapError(f"{bin_dir} is not a directory; it was not changed.")
+    try:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise BootstrapError(f"could not create command directory {bin_dir} ({exc}); it was not changed.") from exc
+
+    command = bin_dir / "goal"
+    wrapper = f'#!/bin/sh\nset -eu\nexec {shlex.quote(str((ROOT / "goal").resolve()))} "$@"\n'
+    if command.is_symlink():
+        raise BootstrapError(f"{command} is a symlink; it was not changed.")
+    if command.exists():
+        if not command.is_file():
+            raise BootstrapError(f"{command} already exists and is not a regular file; it was not changed.")
+        try:
+            existing = command.read_text(encoding="utf-8")
+            mode = command.stat().st_mode
+        except (OSError, UnicodeError) as exc:
+            raise BootstrapError(f"could not inspect existing {command} ({exc}); it was not changed.") from exc
+        if existing != wrapper:
+            raise BootstrapError(f"{command} already exists and is not a Goal Native managed command; it was not changed.")
+        if not mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            try:
+                command.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            except OSError as exc:
+                raise BootstrapError(f"managed command {command} is not executable ({exc}); it was not changed.") from exc
+        return command
+
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix=".goal-", dir=bin_dir, delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(wrapper)
+            stream.flush()
+            os.fchmod(stream.fileno(), 0o755)
+        # Same-filesystem hard link is atomic and refuses an existing command;
+        # rename/replace would silently overwrite a concurrent user install.
+        os.link(temporary, command, follow_symlinks=False)
+    except FileExistsError as exc:
+        raise BootstrapError(f"{command} appeared during installation; it was not changed.") from exc
+    except OSError as exc:
+        raise BootstrapError(f"could not install command at {command} ({exc}); it was not changed.") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return command
+
+
 def _install_source_package(venv_python: str) -> None:
     _run(
         [
@@ -216,8 +299,7 @@ def _install_source_package(venv_python: str) -> None:
             "Remediation: repair pip in .venv or remove only .venv yourself, then rerun bootstrap."
         )
 
-
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     if sys.version_info < MIN_PYTHON:
         print(
             "goal-native bootstrap: Python 3.11+ is required; "
@@ -225,6 +307,21 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--install-command",
+        action="store_true",
+        help="install a persistent bare 'goal' command in the user bin directory",
+    )
+    parser.add_argument(
+        "--bin-dir",
+        type=Path,
+        default=Path.home() / ".local" / "bin",
+        metavar="DIR",
+        help="directory for --install-command (default: ~/.local/bin)",
+    )
+    args = parser.parse_args(argv)
 
     try:
         git = _find_command("git", "install Git and ensure git is on PATH")
@@ -239,17 +336,24 @@ def main() -> int:
         _ensure_source_checkout(git)
         venv_python = _ensure_venv(sys.executable)
         _ensure_pi_submodule(git)
+        _ensure_pip(venv_python)
         _run(
             [npm, "run", "bootstrap:upstream"],
             label="pinned pi build/bootstrap",
             remediation="keep the checkout and pinned pi submodule intact, resolve the reported npm error, and rerun bootstrap",
         )
         _install_source_package(venv_python)
+        command = _install_command(args.bin_dir) if args.install_command else None
     except BootstrapError as exc:
         print(f"goal-native bootstrap: {exc}", file=sys.stderr)
         return 1
 
     print(f"Goal Native is ready. Launch with {ROOT / 'goal'}")
+    if command is not None:
+        print(f"Persistent bare command available at {command}")
+        print(f"If {command.parent} is not already on PATH, add it with:")
+        print(f'  export PATH={shlex.quote(str(command.parent))}:"$PATH"')
+        print("No shell configuration files were changed.")
     print("No login or model call was performed; authenticate explicitly when you choose.")
     return 0
 

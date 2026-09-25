@@ -600,11 +600,11 @@ class CLISubprocessTests(unittest.TestCase):
                 self.assertEqual(["do-not-read.txt"], [p.name for p in outside.iterdir()])
 
     def test_terminal_output_neutralizes_untrusted_control_sequences(self) -> None:
-        from goal_native.cli import _terminal_text
+        from goal_native.terminal import terminal_text
 
         self.assertEqual(
             "safe[2J]52;c;clipboard\n\ttext",
-            _terminal_text("safe\x1b[2J\x1b]52;c;clipboard\x07\n\ttext\r\x9b"),
+            terminal_text("safe\x1b[2J\x1b]52;c;clipboard\x07\n\ttext\r\x9b"),
         )
 
     def test_parser_errors_and_nonfinite_max_time_are_json(self) -> None:

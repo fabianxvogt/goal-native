@@ -53,6 +53,106 @@ class InstallationBoundaryTests(unittest.TestCase):
             from goal_native import Store
             with Store(caller / "relative-state") as store:
                 self.assertEqual("Persist in caller directory", store.export()["records"]["goals"][0]["outcome"])
+    def test_install_command_is_executable_idempotent_and_caller_relative(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="goal-native-command-") as temporary:
+            checkout = Path(temporary) / "checkout"
+            bin_dir = Path(temporary) / "bin"
+            caller = Path(temporary) / "caller"
+            entrypoint = checkout / ".venv" / "bin" / "goal-native"
+            entrypoint.parent.mkdir(parents=True)
+            caller.mkdir()
+            shutil.copy2(LAUNCHER, checkout / "goal")
+            (checkout / "goal").chmod((checkout / "goal").stat().st_mode | stat.S_IXUSR)
+            _executable(
+                entrypoint,
+                f"#!/bin/sh\nexec {shlex_quote(sys.executable)} -m goal_native \"$@\"\n",
+            )
+
+            from scripts import bootstrap
+
+            with patch.object(bootstrap, "ROOT", checkout):
+                command = bootstrap._install_command(bin_dir)
+                first_content = command.read_bytes()
+                first_mode = stat.S_IMODE(command.stat().st_mode)
+                self.assertEqual(command, bootstrap._install_command(bin_dir))
+                self.assertEqual(first_content, command.read_bytes())
+                self.assertEqual(first_mode, stat.S_IMODE(command.stat().st_mode))
+
+            result = subprocess.run(
+                [str(command), "--state", "relative-state", "create", "Persist through installed command"],
+                cwd=caller,
+                env={**os.environ, "PYTHONPATH": str(ROOT)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertTrue((caller / "relative-state").is_dir())
+            self.assertFalse((checkout / "relative-state").exists())
+            self.assertIn(str(checkout / "goal"), first_content.decode("utf-8"))
+            self.assertTrue(first_mode & stat.S_IXUSR)
+
+    def test_install_command_rejects_conflicts_and_symlinks_untouched(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="goal-native-command-conflict-") as temporary:
+            checkout = Path(temporary) / "checkout"
+            bin_dir = Path(temporary) / "bin"
+            checkout.mkdir()
+            bin_dir.mkdir()
+            conflict = bin_dir / "goal"
+            conflict.write_bytes(b"user command\n")
+            conflict.chmod(0o640)
+            before = (conflict.read_bytes(), stat.S_IMODE(conflict.stat().st_mode))
+
+            from scripts import bootstrap
+
+            with patch.object(bootstrap, "ROOT", checkout):
+                with self.assertRaises(bootstrap.BootstrapError):
+                    bootstrap._install_command(bin_dir)
+            self.assertEqual(before[0], conflict.read_bytes())
+            self.assertEqual(before[1], stat.S_IMODE(conflict.stat().st_mode))
+
+            conflict.unlink()
+            target = Path(temporary) / "target"
+            target.write_bytes(b"preserve me\n")
+            conflict.symlink_to(target)
+            with patch.object(bootstrap, "ROOT", checkout):
+                with self.assertRaises(bootstrap.BootstrapError):
+                    bootstrap._install_command(bin_dir)
+            self.assertTrue(conflict.is_symlink())
+            self.assertEqual(b"preserve me\n", target.read_bytes())
+
+
+    def test_failed_atomic_install_does_not_leave_command_or_temporary_file(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="goal-native-command-write-failure-") as temporary:
+            from scripts import bootstrap
+            bin_dir = Path(temporary) / "bin"
+            with patch.object(bootstrap.os, "link", side_effect=OSError("link unavailable")):
+                with self.assertRaises(bootstrap.BootstrapError):
+                    bootstrap._install_command(bin_dir)
+            self.assertEqual([], list(bin_dir.iterdir()))
+
+    def test_bootstrap_provisions_missing_pip_inside_validated_venv(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="goal-native-offline-pip-") as temporary:
+            from scripts import bootstrap
+            venv = Path(temporary) / ".venv"
+            subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)],
+                           check=True, capture_output=True, text=True, timeout=30)
+            python = venv / "bin" / "python"
+            missing = subprocess.run([python, "-I", "-m", "pip", "--version"],
+                                     capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(0, missing.returncode)
+            with patch.object(bootstrap, "VENV", venv), patch.object(bootstrap, "VENV_PYTHON", python):
+                validated = bootstrap._ensure_venv(sys.executable)
+                bootstrap._ensure_pip(validated)
+                working = subprocess.run([python, "-I", "-m", "pip", "--version"],
+                                         capture_output=True, text=True, timeout=10)
+                self.assertEqual(0, working.returncode, working.stderr)
+                self.assertIn(str(venv), working.stdout)
+                bootstrap._ensure_pip(validated)
+                repeated = subprocess.run([python, "-I", "-m", "pip", "--version"],
+                                          capture_output=True, text=True, timeout=10)
+                self.assertEqual(working.stdout, repeated.stdout)
 
     def test_bootstrap_reports_missing_node_without_touching_checkout(self) -> None:
         with tempfile.TemporaryDirectory(prefix="goal-native-bootstrap-prerequisite-") as temporary:

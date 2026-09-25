@@ -25,14 +25,14 @@ from .store import Store
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "staged_read",
-        "description": "Read UTF-8 lines and complete-file SHA256. Lines are 1-based, end inclusive.",
+        "description": "Read UTF-8 line ranges and complete-file SHA256. Prefer bounded ranges; lines are 1-based, end inclusive.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "start_line": {"type": "integer", "minimum": 1},
                 "end_line": {"type": "integer", "minimum": 1},
-                "max_bytes": {"type": "integer", "minimum": 1},
+                "max_bytes": {"type": "integer", "minimum": 1, "description": "Complete-file byte limit, not excerpt size. Use line ranges to limit returned text."},
             },
             "required": ["path"],
             "additionalProperties": False,
@@ -54,7 +54,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "staged_search",
-        "description": "Search staged UTF-8 files for literal text; returns bounded scope and snapshot receipts.",
+        "description": "Search a staged UTF-8 file or directory for literal text. Prefer a file scope when known. Result paths are stage-relative; limits and exclusions are explicit.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -68,7 +68,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "staged_files",
-        "description": "Discover staged files with bounded scope, snapshot identity and exclusions.",
+        "description": "List a staged file or discover a directory. Result paths are stage-relative and directly usable by other tools; scope and exclusions are bounded.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -80,7 +80,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "staged_regex",
-        "description": "Search staged text with a time-bounded regex; results include scope and exclusions.",
+        "description": "Search a staged UTF-8 file or directory with a time-bounded regex. Prefer a file scope when known. Result paths are stage-relative; limits and exclusions are explicit.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -100,7 +100,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
-                "expected_sha256": {"type": "string"},
+                "expected_sha256": {
+                    "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-fA-F]{64}$",
+                    "description": "Copy the entire sha256 from the latest read/edit result, not a discovery manifest ID.",
+                },
                 "edits": {
                     "type": "array",
                     "minItems": 1,
@@ -831,6 +834,8 @@ class Worker:
         prior_invocation_id = payload.get("invocation_id")
         if prior_invocation_id != self._last_invocation_id:
             raise PermissionError("provider request invocation fence mismatch")
+        if prior_invocation_id is not None and prior_invocation_id not in self._finished_invocations:
+            raise PermissionError("prior provider invocation is still running")
         context = payload.get("context")
         if not isinstance(context, dict):
             raise ValueError("provider request context must be an object")
@@ -856,7 +861,10 @@ class Worker:
                         f"model output limit is smaller than configured reserve: "
                         f"{max_tokens} < {self.context_budget.max_output_tokens}"
                     )
-        goal = self._fenced_goal()
+        # The previous provider turn is already terminal here. store.invoke
+        # atomically checks the goal/assignment fence for the next turn; a
+        # terminal invocation must not authorize another tool dispatch.
+        goal = self._fenced_goal(require_running=False)
         assignment_id = self._assignment_id
         if assignment_id is None:
             raise PermissionError("provider request assignment is unavailable")
@@ -1191,7 +1199,7 @@ class Worker:
             if isinstance(part, Mapping) and part.get("type") == "text" and isinstance(part.get("text"), str)
         )
 
-    def _fenced_goal(self) -> Mapping[str, Any]:
+    def _fenced_goal(self, *, require_running: bool = True) -> Mapping[str, Any]:
         goal_id = self._goal_id_required()
         goal = self.store.goal(goal_id)
         if not isinstance(goal, Mapping):
@@ -1205,7 +1213,7 @@ class Worker:
             expected = invocation.get(key)
             if expected is not None and goal.get(key) != expected:
                 raise PermissionError(f"invocation {key} fence changed")
-        if self._invocation_id is not None:
+        if require_running and self._invocation_id is not None:
             self.store.assert_invocation_current(self._invocation_id)
         return goal
 

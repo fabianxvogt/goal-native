@@ -67,8 +67,20 @@ acceptance or source-checkout publication. CLI Ctrl-C also records a
 pause/control-version fence; transport abort alone is not durable authority.
 
 The terminal consumes a controller-only event callback after durable event
-capture. It renders public text and fixed tool labels, not thinking blocks,
-raw tool output or provider traces. No second provider loop or renderer thread.
+capture. Interactive TTYs reuse the pinned Pi TUI's main-screen renderer and
+multiline editor in a separate Node process. Dedicated pipes transport only
+display events and submitted text; Python retains the Store, Worker, credentials
+and cancellation authority. The renderer receives only a presentation-oriented
+environment allowlist, not the controller's provider keys or Node preload options;
+it remains a same-user process, not a credential isolation boundary. Node signals
+Python on cooperative busy shutdown; Python also watches renderer death and
+interrupts active work if Node cannot signal (such as SIGKILL). A broken UI
+event pipe during work enters the same run-cancellation fence; after cancellation,
+display finalization no longer writes to the dead renderer. Python restores its
+saved POSIX TTY mode on teardown.
+The UI renders public text and fixed tool labels, not thinking blocks, raw
+tool output or provider traces. Non-interactive sessions use the existing
+line-oriented interface; JSON commands have no TUI.
 
 Local file recovery uses one non-exported table in the existing Store, not
 portable receipt paths or a second session database. A stopped run's assignment
@@ -93,6 +105,12 @@ selection starts a new baseline. Diff review binds content hashes, modes,
 contract and observed source state. Export serializes those exact bytes to a
 new external file, never applies them to the selected checkout, and excludes
 controller/provider records from the code bundle.
+
+Discovery, literal search and regex share one file/directory scope admission
+path. A file scope opens only that file; directory scopes retain bounded
+no-follow traversal. Every result path is stage-relative, so narrower searches
+do not require callers to reconstruct paths. Both modes share descriptor,
+size-limit and manifest accounting.
 
 Multi-file Python execution still uses the fixed interpreter under the same
 macOS profile. Isolated mode removes ambient Python import configuration.

@@ -11,8 +11,8 @@ quality, efficiency, novelty or general AI-safety claim.
   their run outcome and selected files in a fresh-stage continuation workflow.
 - Visible source selection, immutable baselines, `/diff`, and review-bound
   patch/ZIP export. Source divergence and stale reviews fail visibly.
-- Source bootstrap plus `./goal`; doctor checks safe, clean, pinned source and
-  real pi imports separately from credentials.
+- Source bootstrap plus `./goal` or opt-in persistent `goal` on PATH;
+  doctor checks safe, clean, pinned source and pi imports separately from credentials.
 - Range reads, bounded discovery/regex, SHA-bound surgical edits and historical
   task-receipt retrieval; stale work remains qualified, not current evidence.
 - Optional disposable Docker commands and real Python/TypeScript language
@@ -21,16 +21,61 @@ quality, efficiency, novelty or general AI-safety claim.
   coding-task workflow; independent checks remain separate from worker claims.
 - [Verification](docs/VERIFICATION.md) records actual commands, language queries,
   process/resource boundaries, live continuation and failures/repairs.
-- Measured coding performance remains weak: the repaired historical matrix had
-  two passing Goal Native phase checks, zero constrained-native-pi passes, and
-  no finished phase. These are development results, not a ranking.
+- Measured coding performance remains weak: the post-search-fix matrix had
+  two passing Goal Native phase checks, four constrained-native-pi passes,
+  no finished phase and 15 subscription usage-limit failures. No ranking follows.
+- Setup/budget controls produced passing Python/TypeScript historical candidates;
+  Flask continuation required explicit fresh-stage recovery before finishing.
+- Two fresh small CLI workflows finished cold/changed requests and passed checks
+  after reviewed patch export/apply. Review found and the harness repaired an
+  additional scheduler edge case. Two owner-authorized read-only reviewers
+  approved the final bounded deliverables; no general reliability claim.
+- Three existing-repository deliveries were exported, applied and independently
+  checked: checker exception handling, Repair Atlas supplied case tracks, and
+  structured/color-aware CLI interaction. Explicit model changes, repeated
+  continuations and parent integration fixes are retained in the
+  [real-delivery scorecard](docs/VERIFICATION.md#existing-repository-deliveries-and-terminal-ux--2026-09-25).
+- Actual 48-column terminal: live read/edit/run output `3`, budget stop, process
+  restart and unchanged-request continuation to `4`; draft status preserved.
+- Pi's pinned terminal renderer now provides a multiline editor, Markdown
+  replies, slash-command completion and a live goal panel with labeled status
+  lights; the Store still owns authority and JSON commands stay plain.
+- Framework-Python launch rules and OAuth Ctrl-C cleanup were repaired with
+  focused macOS probes. Full-suite status is recorded in verification.
+- Source bootstrap now provisions missing `pip` offline only after checking
+  that the selected interpreter belongs to the checkout virtual environment.
+  Its previous pip-less checker failures now pass in that same environment.
+- An actual Codex session in the Pi terminal created and ran a disposable
+  Python candidate (`55`), reopened after exit, then revised and ran it
+  (`210`). Renderer SIGKILL during active work now cancels and fences the
+  run; renderer-death, partial-startup and watcher-start failures also restore
+  the TTY and reap the renderer.
+
+- Root-scoped discovery/search now accept an explicit empty path without
+  weakening file-path admission. Eleven retained previously failing discovery
+  calls replayed successfully; no model-token saving is inferred.
+- Independent publication review exposed renderer environment forwarding,
+  repeated dead-renderer display interrupts, late tool dispatch after invocation
+  finish and native session path aliases. The repaired checkout's 153-test suite
+  passed with eight skips; a real cold-to-continuation native session reopened
+  without calling the provider. No same-user path-race guarantee is inferred.
 
 ## Next
 
-1. **Real-task completion and external developer use:** validate practical,
-   declared limits on fresh work, then complete multi-day Python and TypeScript
-   work including interruption, changed requirements, dependency setup, source
-   selection and reviewed export. Maintainer probes are not this acceptance gate.
+The bounded coding execution/recovery/reviewed-delivery gate is complete.
+The exercised profile uses explicit 32-round / 300-second / 131,072 context
+limits and runnable environment-correct reproductions, not larger defaults.
+Wider reliability and external use remain separate open requirements below.
+
+1. **External acceptance and runtime readiness:** framework-Python launch,
+   OAuth Ctrl-C, Pi terminal loss/fault cleanup and native session path guards
+   passed the exercised checks; the checkout's full suite ran 153 tests with
+   eight skips. The earlier intermittent login-test timeout remains unproven;
+   synthetic PTYs now avoid inheriting Apple Terminal's host modifier mode.
+   Run the documented external handoff for multi-day Python/TypeScript work,
+   including interruption, changed requirements, dependency setup and reviewed
+   export. Assisted maintainer deliveries and loopback fixtures do not satisfy
+   external use.
 2. **Browser, only after the CLI loop is comfortable:** one composer, session
    list and result view; move goal/evidence/effect forms behind details.
 
@@ -108,6 +153,15 @@ complete lifecycle comparison remain required before superiority/efficiency clai
 - Repaired-harness replication completed all 40 phase attempts without bridge
   or evidence-validation errors. Its poor coding outcomes and both report
   hashes are retained in verification; no failed first-run row was overwritten.
+- File-scoped discovery/literal/regex search with directly reusable stage-relative
+  paths. A frozen replay repaired all 58 observed file-search refusals without
+  mutating candidates; 121 application tests and four evaluator safeguards passed.
+- Pi TUI input/output, live goal status lights and restart/cancel/continue;
+  opt-in `goal` installation; targeted macOS launch and login Ctrl-C repairs.
+- Offline pip recovery in a validated, previously pip-less checkout
+  environment; the repaired checkout passed its application suite.
+- Real provider-backed Pi terminal cold/changed-request delivery, reviewed
+  patch application, and controller-owned TTY restoration after renderer death.
 
 ## Release record
 

@@ -264,5 +264,3 @@ class LanguageTools:
         if omitted:
             output["omitted"] = omitted
         return output
-
-

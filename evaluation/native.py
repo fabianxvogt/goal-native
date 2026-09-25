@@ -2,10 +2,38 @@
 from __future__ import annotations
 
 import json
+import re
+import stat
 from pathlib import Path
 from typing import Any
 
 from goal_native.worker import BridgeError, PiBridge
+
+
+def _regular_file_without_symlinks(path: Path | str) -> Path | None:
+    if not isinstance(path, (Path, str)):
+        return None
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        return None
+    current = Path(candidate.anchor)
+    for component in candidate.parts[1:]:
+        current /= component
+        try:
+            details = current.lstat()
+        except OSError:
+            return None
+        if stat.S_ISLNK(details.st_mode):
+            return None
+        if current != candidate and not stat.S_ISDIR(details.st_mode):
+            return None
+    try:
+        details = candidate.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(details.st_mode):
+        return None
+    return candidate.resolve(strict=True)
 
 
 class NativeSessionBridge(PiBridge):
@@ -45,9 +73,16 @@ class NativeSessionBridge(PiBridge):
 
     def continuation_reference(self) -> str | None:
         """Recover only a real persisted session, including after an interrupted bridge."""
+        key = self.metadata.get("session_key")
+        if not isinstance(key, str) or re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*", key) is None:
+            raise BridgeError("session_key must be an explicit safe identifier")
         directory = Path(self.metadata["session_dir"]).resolve()
-        manifest_path = directory / (self.metadata["session_key"] + ".json")
-        if not manifest_path.is_file() or manifest_path.is_symlink():
+        manifest_path = directory / f"{key}.json"
+        try:
+            manifest_details = manifest_path.lstat()
+        except OSError:
+            return None
+        if stat.S_ISLNK(manifest_details.st_mode) or not stat.S_ISREG(manifest_details.st_mode):
             return None
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         for key in ("task_id", "registration_sha256", "task_snapshot_sha256",
@@ -55,8 +90,12 @@ class NativeSessionBridge(PiBridge):
                     "environment_snapshot_sha256"):
             if manifest.get(key) != self.metadata.get(key):
                 raise BridgeError("persisted native session identity changed")
-        session_file = Path(manifest["session_file"])
-        if session_file.is_symlink() or session_file.resolve().parent != directory or not session_file.is_file():
+        session_file = _regular_file_without_symlinks(manifest.get("session_file"))
+        if session_file is None or session_file == directory:
+            return None
+        try:
+            session_file.relative_to(directory)
+        except ValueError:
             return None
         with session_file.open(encoding="utf-8") as source:
             header = json.loads(source.readline(65536))

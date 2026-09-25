@@ -123,7 +123,8 @@ function redactText(value) {
   return String(value)
     .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [redacted]")
     .replace(/(access|refresh)_token[=:]\s*[^\s,&}]+/gi, "$1_token=[redacted]")
-    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted-token]");
+    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted-token]")
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 }
 
 function createInteraction(method) {
@@ -175,7 +176,7 @@ function createInteraction(method) {
     async prompt(prompt) {
       if (prompt.type === "select") {
         if (method !== undefined) return method;
-        const choices = prompt.options.map((option, index) => `${index + 1}) ${option.label}`).join("  ");
+        const choices = prompt.options.map((option, index) => `${index + 1}) ${redactText(option.label)}`).join("  ");
         const answer = (await ask({ ...prompt, message: `${prompt.message}\n${choices}` }, prompt.signal)).trim();
         if (answer === "") return prompt.options[0]?.id ?? "";
         const numeric = Number.parseInt(answer, 10);
@@ -233,6 +234,9 @@ async function runCommand({ command, authFile, method }) {
     await models.login(PROVIDER, "oauth", io.interaction);
   } finally {
     io.close();
+    if (io.interaction.signal.aborted) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
   }
   return { ok: true, ...await readCodexStatus(authFile) };
 }
@@ -252,8 +256,9 @@ export async function main(argv = process.argv.slice(2)) {
     writeJson(await runCommand(parseArgs(argv)));
     return 0;
   } catch (error) {
-    writeJson(errorResult(error));
-    return 1;
+    const result = errorResult(error);
+    writeJson(result);
+    return result.type === "cancelled" ? 130 : 1;
   }
 }
 

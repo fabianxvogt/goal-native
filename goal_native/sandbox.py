@@ -191,12 +191,21 @@ class Sandbox:
         if not os.path.isabs(selected):
             self.close()
             raise SandboxError("interpreter must be an absolute path")
+        self._interpreter_launch_path = os.path.abspath(selected)
         trusted_interpreter = os.path.realpath(sys.executable)
         selected_interpreter = os.path.realpath(selected)
         if selected_interpreter != trusted_interpreter:
             self.close()
             raise SandboxError("only the controller's Python interpreter is trusted")
         self.interpreter = trusted_interpreter
+        framework_interpreter = os.path.join(
+            os.path.dirname(os.path.dirname(self.interpreter)),
+            "Resources", "Python.app", "Contents", "MacOS", "Python",
+        )
+        interpreter_paths = [self.interpreter, self._interpreter_launch_path]
+        if os.path.isfile(framework_interpreter):
+            interpreter_paths.append(framework_interpreter)
+        self._interpreter_exec_paths = tuple(dict.fromkeys(interpreter_paths))
         if not os.path.isfile(self.interpreter) or not os.access(self.interpreter, os.X_OK):
             self.close()
             raise SandboxError("trusted Python interpreter does not exist or is not executable")
@@ -658,12 +667,9 @@ class Sandbox:
             "truncated": False,
         }
         result_truncated = False
-        start_fd = self._open_directory(scope_parts)
         try:
-            self._snapshot_directory(
-                start_fd,
-                "",
-                0,
+            self._snapshot_scope(
+                scope_parts,
                 files,
                 snapshot_hash,
                 exclusions,
@@ -709,7 +715,6 @@ class Sandbox:
                     os.close(fd)
                 except OSError:
                     pass
-            os.close(start_fd)
 
         return {
             "query": query,
@@ -762,12 +767,9 @@ class Sandbox:
         snapshot_hash = hashlib.sha256()
         files: list[tuple[str, int, int]] = []
         state = {"entries": 0, "scan_bytes": 0, "truncated": False}
-        start_fd = self._open_directory(scope_parts)
         try:
-            self._snapshot_directory(
-                start_fd,
-                "",
-                0,
+            self._snapshot_scope(
+                scope_parts,
                 files,
                 snapshot_hash,
                 exclusions,
@@ -783,7 +785,6 @@ class Sandbox:
                     os.close(fd)
                 except OSError:
                     pass
-            os.close(start_fd)
         return {
             "path": self._relative_parts(scope_parts),
             "files": [
@@ -857,12 +858,9 @@ class Sandbox:
         snapshot_hash = hashlib.sha256()
         files: list[tuple[str, int, int]] = []
         state = {"entries": 0, "scan_bytes": 0, "truncated": False}
-        start_fd = self._open_directory(scope_parts)
         try:
-            self._snapshot_directory(
-                start_fd,
-                "",
-                0,
+            self._snapshot_scope(
+                scope_parts,
                 files,
                 snapshot_hash,
                 exclusions,
@@ -912,7 +910,6 @@ class Sandbox:
                     os.close(fd)
                 except OSError:
                     pass
-            os.close(start_fd)
         return {
             "pattern": pattern,
             "matches": matches,
@@ -1167,12 +1164,16 @@ class Sandbox:
             "(version 1)",
             "(deny default)",
             "(deny process-fork)",
-            "(allow process-exec (literal " + _sbpl(self.interpreter) + "))",
+        ]
+        for interpreter_path in self._interpreter_exec_paths:
+            lines.append("(allow process-exec (literal " + _sbpl(interpreter_path) + "))")
+            lines.append("(allow file-read* (literal " + _sbpl(interpreter_path) + "))")
+        lines.extend([
             "(allow sysctl-read)",
             "(allow file-write* (subpath " + _sbpl(str(self.root)) + "))",
             "(allow file-write* (literal \"/dev/fd/1\"))",
             "(allow file-write* (literal \"/dev/fd/2\"))",
-        ]
+        ])
         seen_dirs: set[str] = set()
         seen_literals: set[str] = set()
         for directory in read_dirs:
@@ -1287,7 +1288,7 @@ class Sandbox:
         return path, args
 
     def _parts(self, value: Any, *, allow_root: bool = False) -> tuple[str, ...]:
-        if not isinstance(value, str) or not value or "\x00" in value:
+        if not isinstance(value, str) or "\x00" in value or (not allow_root and not value):
             raise SandboxError("a relative staged path is required")
         if len(value) > _MAX_PATH_CHARS:
             raise SandboxError("staged path exceeds the path limit")
@@ -1357,6 +1358,47 @@ class Sandbox:
             if len(chunks) > limit:
                 raise SandboxError(f"staged file exceeds read limit: > {limit}")
         return bytes(chunks)
+
+    def _snapshot_scope(
+        self,
+        parts: tuple[str, ...],
+        files: list[tuple[str, int, int]],
+        snapshot_hash: Any,
+        exclusions: dict[str, int],
+        state: dict[str, Any],
+        *,
+        max_files: int,
+        max_scan_bytes: int,
+        max_file_bytes: int,
+        max_entries: int,
+    ) -> None:
+        directory_fd = self._open_directory(parts[:-1])
+        try:
+            if parts:
+                name = parts[-1]
+                selected = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISREG(selected.st_mode):
+                    state["entries"] = 1
+                    self._snapshot_file(
+                        directory_fd, name, self._relative_parts(parts), selected,
+                        files, snapshot_hash, exclusions, state,
+                        max_files=max_files, max_scan_bytes=max_scan_bytes,
+                        max_file_bytes=max_file_bytes,
+                    )
+                    return
+                if not stat.S_ISDIR(selected.st_mode):
+                    raise SandboxError("staged scope must be a regular file or directory")
+                child_fd = self._open_regular_directory(directory_fd, name)
+                os.close(directory_fd)
+                directory_fd = child_fd
+            self._snapshot_directory(
+                directory_fd, "/".join(parts), 0,
+                files, snapshot_hash, exclusions, state,
+                max_files=max_files, max_scan_bytes=max_scan_bytes,
+                max_file_bytes=max_file_bytes, max_entries=max_entries,
+            )
+        finally:
+            os.close(directory_fd)
 
     def _snapshot_directory(
         self,
@@ -1446,55 +1488,68 @@ class Sandbox:
             if not stat.S_ISREG(mode):
                 exclusions["non_regular"] += 1
                 continue
-            if len(files) >= max_files:
-                exclusions["file_limit"] += 1
-                state["truncated"] = True
-                continue
-            size = int(child_stat.st_size)
-            if size > max_file_bytes:
+            self._snapshot_file(
+                directory_fd, name, child_relative, child_stat,
+                files, snapshot_hash, exclusions, state,
+                max_files=max_files, max_scan_bytes=max_scan_bytes,
+                max_file_bytes=max_file_bytes,
+            )
+
+    def _snapshot_file(
+        self,
+        directory_fd: int,
+        name: str,
+        relative: str,
+        selected: os.stat_result,
+        files: list[tuple[str, int, int]],
+        snapshot_hash: Any,
+        exclusions: dict[str, int],
+        state: dict[str, Any],
+        *,
+        max_files: int,
+        max_scan_bytes: int,
+        max_file_bytes: int,
+    ) -> None:
+        if len(files) >= max_files:
+            exclusions["file_limit"] += 1
+            state["truncated"] = True
+            return
+        if selected.st_size > max_file_bytes:
+            exclusions["file_size_limit"] += 1
+            state["truncated"] = True
+            return
+        if state["scan_bytes"] + selected.st_size > max_scan_bytes:
+            exclusions["scan_bytes_limit"] += 1
+            state["truncated"] = True
+            return
+        fd = -1
+        try:
+            # Nonblocking open also refuses a file raced into a FIFO without hanging.
+            fd = self._open_regular(directory_fd, name, os.O_RDONLY | os.O_NONBLOCK)
+            opened_stat = os.fstat(fd)
+            opened_size = int(opened_stat.st_size)
+            if opened_size > max_file_bytes:
                 exclusions["file_size_limit"] += 1
                 state["truncated"] = True
-                continue
-            if state["scan_bytes"] + size > max_scan_bytes:
+                return
+            if state["scan_bytes"] + opened_size > max_scan_bytes:
                 exclusions["scan_bytes_limit"] += 1
                 state["truncated"] = True
-                continue
-            fd = -1
-            keep_fd = False
-            try:
-                fd = self._open_regular(directory_fd, name, os.O_RDONLY)
-                opened_stat = os.fstat(fd)
-                if not stat.S_ISREG(opened_stat.st_mode):
-                    exclusions["races"] += 1
-                    continue
-                opened_size = int(opened_stat.st_size)
-                if opened_size > max_file_bytes:
-                    exclusions["file_size_limit"] += 1
-                    state["truncated"] = True
-                    continue
-                if state["scan_bytes"] + opened_size > max_scan_bytes:
-                    exclusions["scan_bytes_limit"] += 1
-                    state["truncated"] = True
-                    continue
-                keep_fd = True
-            except FileNotFoundError:
-                exclusions["races"] += 1
-            except OSError:
-                exclusions["errors"] += 1
-            finally:
-                if fd != -1 and not keep_fd:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-            if not keep_fd:
-                continue
+                return
             snapshot_hash.update(
-                f"{child_relative}\0{opened_stat.st_dev}:{opened_stat.st_ino}:"
+                f"{relative}\0{opened_stat.st_dev}:{opened_stat.st_ino}:"
                 f"{opened_stat.st_size}:{opened_stat.st_mtime_ns}\n".encode("utf-8")
             )
-            files.append((child_relative, fd, opened_size))
+            files.append((relative, fd, opened_size))
+            fd = -1  # The caller owns every descriptor admitted to the manifest.
             state["scan_bytes"] += opened_size
+        except FileNotFoundError:
+            exclusions["races"] += 1
+        except OSError:
+            exclusions["errors"] += 1
+        finally:
+            if fd != -1:
+                os.close(fd)
 
     @staticmethod
     def _open_regular_directory(parent_fd: int, name: str) -> int:

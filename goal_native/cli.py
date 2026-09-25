@@ -26,6 +26,8 @@ from .context import ContextBudget
 from .runtime import pi_source_status
 from .sandbox import Sandbox, SandboxError, SandboxUnavailable
 from .store import Store
+from .terminal import Terminal, terminal_text
+from .tui import PiTerminal, goal_indicator, interactive_terminal
 from .worker import Worker
 from .workspace import (
     blocked_component, copy_selected_directory, export_reviewed,
@@ -890,31 +892,34 @@ def _code_command(state: str, goal_id: str, command: str, args: argparse.Namespa
 
 
 def _print_code_review(command: str, report: dict[str, Any]) -> None:
-    print()
+    terminal = Terminal(sys.stdout)
+    terminal.write()
+    terminal.write({"files": "Selected files", "changes": "Staged changes", "diff": "Review"}[command], color="cyan")
     if command == "files":
         for item in report["candidate_files"]:
-            print(_terminal_text(f"  {item['path']}  ({item['bytes']} bytes)"))
+            terminal.write(f"  {item['path']}  ({item['bytes']} bytes)")
         exclusions = {item["path"]: item["reason"] for item in (
             report["source_selection"].get("exclusions", []) + report["candidate_exclusions"]
         )}
         for path, reason in sorted(exclusions.items()):
-            print(_terminal_text(f"  excluded: {path} — {reason}"))
-        print("Only selected files participate in code export.")
+            terminal.write(f"  excluded: {path} — {reason}")
+        terminal.write("Only selected files participate in code export.")
     else:
         for change in report["changes"]:
             suffix = " (binary; files archive only)" if change["binary"] else ""
-            print(_terminal_text(f"  {change['status']:8} {change['path']}{suffix}"))
+            terminal.write(f"  {change['status']:8} {change['path']}{suffix}")
         if not report["changes"]:
-            print("No staged changes.")
-        print(_terminal_text(f"Original source: {report['source_status']['state']}"))
+            terminal.write("No staged changes.")
+        terminal.write(f"Original source: {report['source_status']['state']}")
         for path in report["source_status"]["changed_paths"]:
-            print(_terminal_text(f"  source diverged: {path}"))
+            terminal.write(f"  source diverged: {path}")
         if command == "diff":
-            print(_terminal_text(report["patch"]))
-            print(_terminal_text(f"Review: {report['review_id']}"))
-            print("Use /export PATH [--format files]. Changed bytes or source state require a new /diff.")
-        print(report["note"])
-    print()
+            # Patch content stays unstyled and is not reformatted as prose.
+            print(terminal_text(report["patch"]))
+            terminal.write(f"Review: {report['review_id']}")
+            terminal.write("Use /export PATH [--format files]. Changed bytes or source state require a new /diff.")
+        terminal.write(report["note"])
+    terminal.write()
 
 
 def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
@@ -1035,57 +1040,49 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
 
 
 
-def _terminal_text(value: str) -> str:
-    """Never interpret model, imported, or diagnostic text as terminal controls."""
-    return "".join(char for char in value if char in "\n\t" or (
-        ord(char) >= 32 and not 127 <= ord(char) <= 159
-    ))
-
-
 class _RunDisplay:
     """Render public assistant text and tool activity, never reasoning or traces."""
 
     def __init__(self) -> None:
-        self.stream = sys.stdout
-        self.tty = self.stream.isatty()
-        self.status_visible = False
+        self.terminal = Terminal(sys.stdout)
+        self.stream = self.terminal.stream
         self.line_open = False
         self.seen: dict[int, int] = {}
         self.text_index: int | None = None
         self.last_reply: str | None = None
         self._status("Working…")
 
-    def _clear_status(self) -> None:
-        if self.status_visible:
-            self.stream.write("\r\x1b[2K")
-            self.stream.flush()
-            self.status_visible = False
-
     def _end_text(self) -> None:
         if self.line_open:
-            self.stream.write("\n\n")
-            self.stream.flush()
+            if isinstance(self.stream, PiTerminal):
+                self.stream.send("assistant_end")
+            else:
+                self.stream.write("\n\n")
             self.line_open = False
 
-    def _status(self, text: str) -> None:
+    def _status(self, text: str, color: str = "dim") -> None:
         self._end_text()
-        if self.tty:
-            self._clear_status()
-            self.stream.write(text)
-            self.stream.flush()
-            self.status_visible = True
+        if isinstance(self.stream, PiTerminal):
+            self.stream.send("activity", text=text, color=color)
         else:
-            print(text, file=sys.stderr, flush=True)
+            self.terminal.write(text, color=color)
 
     def _append(self, index: int, text: str) -> None:
         if not text:
             return
-        self._clear_status()
+        if not self.line_open and not isinstance(self.stream, PiTerminal):
+            self.terminal.write("Assistant", color="cyan")
         if self.text_index is not None and self.text_index != index:
-            self.stream.write("\n")
+            if isinstance(self.stream, PiTerminal):
+                self.stream.send("assistant", text="\n")
+            else:
+                self.stream.write("\n")
         self.text_index = index
         self.seen[index] = self.seen.get(index, 0) + len(text)
-        self.stream.write(_terminal_text(text))
+        if isinstance(self.stream, PiTerminal):
+            self.stream.send("assistant", text=terminal_text(text))
+        else:
+            self.stream.write(terminal_text(text))
         self.stream.flush()
         self.line_open = True
 
@@ -1119,34 +1116,35 @@ class _RunDisplay:
                 "read_receipt": "Reading previous observations…",
                 "finding": "Saving a finding…",
             }.get(event.get("toolName"), "Using a tool…")
-            self._status(label)
+            self._status("Tool: " + label)
         elif kind == "tool_execution_end":
-            self._status("Tool failed; continuing…" if event.get("isError") else "Working…")
+            failed = bool(event.get("isError"))
+            self._status("Tool failed; continuing…" if failed else "Tool complete", "yellow" if failed else "dim")
 
     def finish(self, result: dict[str, Any] | None = None) -> None:
-        self._clear_status()
         if result is not None:
             reply = result.get("result") or ""
             if reply != self.last_reply:
                 if self.seen:
                     consumed = sum(self.seen.values()) + max(0, len(self.seen) - 1)
-                    self.stream.write(_terminal_text(reply[consumed:]))
-                elif reply or not self.last_reply:
-                    self.stream.write(_terminal_text(reply or "No response text returned."))
-                    self.line_open = True
+                    self._append(self.text_index or 0, reply[consumed:])
+                elif reply:
+                    self._append(0, reply)
         self._end_text()
 
 
 def _chat_sessions(state: str) -> list[dict[str, Any]]:
     with Store(_state_path(state)) as store:
-        return sorted(store.list_goals(), key=lambda goal: (goal["updated_at"], goal["id"]), reverse=True)
+        return store.session_summaries()
 
 
 def _chat_status(state: str, goal_id: str, args: argparse.Namespace | None = None) -> None:
+    terminal = Terminal(sys.stdout)
     with Store(_state_path(state)) as store:
         summary = _goal_summary(store.goal(goal_id))
         stage = _local_stage_path(store, goal_id)
-    print(_terminal_text(f"\nSession  {summary['outcome']}\nID       {goal_id}"))
+    terminal.write("\nSession status", color="cyan")
+    terminal.write(terminal_text(f"Session  {summary['outcome']}\nID       {goal_id}"))
     run = summary.get("latest_run")
     if run is None:
         runs = summary["recorded_runs"]
@@ -1154,35 +1152,35 @@ def _chat_status(state: str, goal_id: str, args: argparse.Namespace | None = Non
     run_status = run.get("status", "not recorded") if isinstance(run, dict) else "not recorded"
     reason = run.get("stop_reason") if isinstance(run, dict) else None
     suffix = f" · {reason}" if reason else ""
-    print(_terminal_text(f"Work     last outcome: {run_status}{suffix} · {len(summary['artifacts'])} saved artifacts"))
+    terminal.write(terminal_text(f"Work     last outcome: {run_status}{suffix} · {len(summary['artifacts'])} saved artifacts"))
     diagnostic = run.get("diagnostic") if isinstance(run, dict) else None
     if isinstance(diagnostic, dict) and diagnostic.get("message"):
-        print(_terminal_text(f"Detail   {diagnostic['message']}"))
+        terminal.write(terminal_text(f"Detail   {diagnostic['message']}"))
     admission = run.get("admission") if isinstance(run, dict) else None
     if isinstance(admission, dict):
         total = admission.get("total_tokens")
         ceiling = admission.get("max_context_tokens")
         headroom = ceiling - total if isinstance(ceiling, int) and isinstance(total, int) else "unknown"
-        print(_terminal_text(f"Budget   estimated {total} / {ceiling} tokens · headroom {headroom} · not billed usage"))
+        terminal.write(terminal_text(f"Budget   estimated {total} / {ceiling} tokens · headroom {headroom} · not billed usage"))
     elif args is not None:
-        print(_terminal_text(f"Budget   ceiling {args.context_budget} tokens · no admission recorded"))
+        terminal.write(terminal_text(f"Budget   ceiling {args.context_budget} tokens · no admission recorded"))
     limits = run.get("limits") if isinstance(run, dict) else None
     rounds = limits.get("max_rounds") if isinstance(limits, dict) else (args.max_rounds if args else "unknown")
     seconds = limits.get("max_time") if isinstance(limits, dict) else (args.max_time if args else "unknown")
     used_rounds = run.get("rounds") if isinstance(run, dict) else None
-    print(_terminal_text(f"Limits   rounds {used_rounds if used_rounds is not None else 'unknown'} / {rounds} · time {seconds}s"))
+    terminal.write(terminal_text(f"Limits   rounds {used_rounds if used_rounds is not None else 'unknown'} / {rounds} · time {seconds}s"))
     if isinstance(limits, dict) and limits.get("execution"):
-        print(_terminal_text(
+        terminal.write(terminal_text(
             f"Runtime  {limits['execution']} · network "
             f"{'explicitly permitted' if limits.get('network_allowed') else 'denied'}"
         ))
-    print(_terminal_text(f"Goal     {summary['goal_status']} · run completion is not acceptance"))
+    terminal.write(terminal_text(f"Goal     {summary['goal_status']} · run completion is not acceptance"))
     if stage:
-        print(_terminal_text(f"Files    {stage}"))
-    print()
+        terminal.write(terminal_text(f"Files    {stage}"))
+    terminal.write()
 
 
-def _chat(args: argparse.Namespace) -> int:
+def _chat(args: argparse.Namespace, ui: PiTerminal | None = None) -> int:
     if args.model is None and args.provider == "openai-codex":
         args.model = "gpt-6-luna"
     if not args.model:
@@ -1190,56 +1188,99 @@ def _chat(args: argparse.Namespace) -> int:
     ContextBudget(max_context_tokens=args.context_budget)
     if args.allow_network and args.execution != "docker":
         raise ValueError("--allow-network requires --execution docker")
-    # Readline adds local editing/history without a dependency or a history file.
-    try:
-        import readline
-    except ImportError:
-        pass
+    # Readline must not reset terminal modes owned by the Pi editor.
+    if ui is None:
+        try:
+            import readline
+        except ImportError:
+            pass
 
-    print(_terminal_text(f"\nGoal Native  /  {args.model}  /  {args.provider}"))
-    if args.execution == "docker":
-        print(_terminal_text(
-            f"Isolated containers  /  {args.container_image}  /  network "
-            f"{'permitted when requested' if args.allow_network else 'denied'}"
-        ))
-    print("New session. Just type a request; goals are saved automatically.")
-    print("/new  /sessions  /resume <number or id>  /status  /changes  /diff  /help  /exit\n")
+    terminal = Terminal(sys.stdout)
+    if ui:
+        ui.send("header", model=args.model, runtime=args.execution,
+                budget=args.context_budget, source=args.source_dir)
+    else:
+        terminal.write("\nGoal Native", color="cyan")
+        terminal.write(f"{args.model} / {args.provider}")
+        terminal.write(f"Runtime: {args.execution}")
+        if args.execution == "docker":
+            terminal.write(f"{args.container_image} / network "
+                           f"{'permitted when requested' if args.allow_network else 'denied'}")
+        terminal.write(f"Context ceiling: {args.context_budget:,} tokens")
+        if args.source_dir:
+            terminal.field("Source selected (not sent)", str(args.source_dir))
+        terminal.write("/help for commands / Ctrl-C cancels\n", color="dim")
     goal_id: str | None = None
     seeded_goals: set[str] = set()
     listed_ids: list[str] = []
     reviewed: dict[str, str] = {}
     last_status = 0
+    def refresh_goals(running: str | None = None) -> None:
+        nonlocal listed_ids
+        if ui is None:
+            return
+        sessions = _chat_sessions(args.state)
+        listed_ids = [goal["id"] for goal in sessions]
+        rows = []
+        for number, goal in enumerate(sessions, 1):
+            label, color = goal_indicator(goal, goal["id"] == running)
+            rows.append({"id": goal["id"], "number": number,
+                         "title": terminal_text(goal["outcome"]),
+                         "status": goal["status"], "label": label, "color": color})
+        ui.send("goals", goals=rows, selected=goal_id, budget=args.context_budget)
+
     def execute(run_goal_id: str, run_args: argparse.Namespace) -> dict[str, Any]:
         nonlocal last_status
-        print()
+        refresh_goals(run_goal_id)
+        terminal.write()
         display = _RunDisplay()
+        if ui:
+            ui.arm_run()
+
+        def finish_display(result: dict[str, Any] | None = None) -> None:
+            try:
+                display.finish(result)
+            except KeyboardInterrupt:
+                if ui is None or not ui.renderer_dead:
+                    raise
+                ui.abandon_run()
         try:
             try:
-                result = _run_existing(args.state, run_goal_id, run_args, on_event=display.event)
-            except CLICancelled as exc:
-                result = exc.payload
-            display.finish(result)
+                try:
+                    result = _run_existing(args.state, run_goal_id, run_args, on_event=display.event)
+                except CLICancelled as exc:
+                    result = exc.payload
+                    if ui is not None and ui.renderer_dead:
+                        ui.abandon_run()
+                finish_display(result)
+            finally:
+                finish_display()
         finally:
-            display.finish()
+            if ui:
+                ui.disarm_run()
         if result.get("run_started"):
             seeded_goals.add(run_goal_id)
         status = result.get("status", "failed")
         last_status = 0 if status == "finished" else 130 if status == "cancelled" else 1
         if status != "finished":
-            print(_terminal_text(f"Run {status}. Request and any completed work are saved."))
-            print("Send a follow-up to continue, /status for details, or /new.\n")
+            terminal.field("Run stopped", str(status), color="yellow")
+            terminal.write("Request and completed work are saved.")
+            terminal.write("/continue retries the request unchanged.\n/status shows details and limits.\nUse /budget N or /continue --max-rounds N\nto explicitly adjust limits.\n")
+        else:
+            terminal.write("Run finished (not acceptance).", color="green")
         return result
     while True:
         try:
-            text = input("> ")
-            # Explicit continuation keeps multiline input dependency-free.
-            while text.endswith("\\"):
-                text = text[:-1] + "\n" + input("  ")
+            refresh_goals()
+            text = ui.read() if ui else input(terminal.prompt("you › "))
+            # Pi owns multiline editing; the plain interface retains backslash continuation.
+            while ui is None and text.endswith("\\"):
+                text = text[:-1] + "\n" + input(terminal.prompt("…   "))
         except EOFError:
-            print()
+            terminal.write()
             return last_status
         except KeyboardInterrupt:
-            print("\nInput cleared. /exit to quit.\n")
+            terminal.write("\nInput cleared. /exit to quit.\n")
             continue
         if not text.strip():
             continue
@@ -1250,22 +1291,25 @@ def _chat(args: argparse.Namespace) -> int:
                 if command == "/exit" and not argument:
                     return last_status
                 if command == "/help" and not argument:
-                    print(
-                        "\nType to work. Follow-ups stay in this session.\n"
-                        "/new       Start a fresh session on the next request\n"
-                        "/sessions  List saved sessions\n"
-                        "/resume N  Open a listed session (or use its full ID)\n"
-                        "/status    Show work, goal state, latest outcome and budget headroom\n"
-                        "/budget [N]  Inspect or set the context ceiling; does not run\n"
-                        "/continue [worker limits]  Reuse the latest request without adding text\n"
-                        "/files     Inspect selected files and exclusions\n"
-                        "/changes   List staged changes and source divergence\n"
-                        "/diff      Review the exact changes before export\n"
-                        "/export PATH [--format files]  Export the last reviewed patch or files ZIP\n"
-                        "/exit      Leave; saved work stays on disk\n"
-                        "End a line with \\ for multiline input. Ctrl-C stops a run.\n"
-                        "Draft-only: responses never approve or deliver effects.\n"
-                    )
+                    terminal.write("\nWork", color="cyan")
+                    terminal.write("  Type a request or follow-up; it is saved in this session.")
+                    terminal.write("  /continue [limits]  Retry unchanged")
+                    terminal.write("    --context-budget N / --max-rounds N\n    --max-time SECONDS")
+                    terminal.write("  /new               Start a fresh session")
+                    terminal.write("\nSessions and limits", color="cyan")
+                    terminal.write("  /goals /sessions   Goals, status lights and saved sessions")
+                    terminal.write("  /resume N|ID       Resume a listed session or full ID")
+                    terminal.write("  /status            Inspect outcome, goal state and budget")
+                    terminal.write("  /budget [N]        Inspect or set the context ceiling")
+                    terminal.write("\nReview and export", color="cyan")
+                    terminal.write("  /files  /changes   Inspect selected files and staged changes")
+                    terminal.write("  /diff              Review exact changes before export")
+                    terminal.write("  /export PATH [--format patch|files]\n                     Export reviewed changes")
+                    terminal.write("\nControls", color="cyan")
+                    terminal.write("  Alt-Enter: newline; Tab: commands; Ctrl-C: stop; Ctrl-D: exit."
+                                   if ui else '  End a line with \\ for multiline input; Ctrl-C cancels a run.')
+                    terminal.write("  /exit              Leave; saved work stays on disk")
+                    terminal.write("Draft-only: responses never approve or deliver effects.\n", color="dim")
                     continue
                 if command == "/budget":
                     values = shlex.split(argument)
@@ -1275,7 +1319,7 @@ def _chat(args: argparse.Namespace) -> int:
                         ceiling = _positive_int(values[0])
                         ContextBudget(max_context_tokens=ceiling)
                         args.context_budget = ceiling
-                    print(_terminal_text(f"Context ceiling: {args.context_budget} tokens (no provider call)"))
+                    terminal.write(terminal_text(f"Context ceiling: {args.context_budget} tokens (no provider call)"))
                     continue
                 if command == "/continue":
                     if goal_id is None:
@@ -1300,17 +1344,21 @@ def _chat(args: argparse.Namespace) -> int:
                 if command == "/new" and not argument:
                     goal_id = None
                     last_status = 0
-                    print("\nNew session. What would you like to do?\n")
+                    terminal.write("\nNew session. What would you like to do?\n")
                     continue
-                if command == "/sessions" and not argument:
+                if command in {"/goals", "/sessions"} and not argument:
                     sessions = _chat_sessions(args.state)
                     listed_ids = [goal["id"] for goal in sessions]
-                    print()
+                    terminal.write()
                     for number, goal in enumerate(sessions, 1):
-                        title = " ".join(_terminal_text(goal["outcome"]).split())
-                        print(f"  {number}. {title[:72]}")
-                    print("Use /resume <number>." if sessions else "No saved sessions yet.")
-                    print()
+                        title = " ".join(terminal_text(goal["outcome"]).split())
+                        short_id = goal["id"][:8]
+                        label, color = goal_indicator(goal)
+                        terminal.write(f"● {number}. {short_id} / {label}", color=color)
+                        terminal.write(f"  {title}")
+                        terminal.write(f"  Goal: {goal['status']} · run completion is not acceptance")
+                    terminal.write("Use /resume <number>." if sessions else "No saved sessions yet.")
+                    terminal.write()
                     continue
                 if command == "/resume" and argument:
                     selected = argument
@@ -1325,14 +1373,14 @@ def _chat(args: argparse.Namespace) -> int:
                         raise ValueError("This session is cancelled. Use /new to start another.")
                     goal_id = selected
                     last_status = 0
-                    print(_terminal_text(f"\nResumed: {' '.join(goal['outcome'].split())[:72]}"))
-                    print("Saved requests and artifacts are available. Type to continue.")
-                    print("Local session files are recovered automatically when available.")
-                    print()
+                    terminal.write(terminal_text(f"\nResumed: {' '.join(goal['outcome'].split())}"))
+                    terminal.write("Saved requests and artifacts are available. Type to continue.")
+                    terminal.write("Local session files are recovered automatically when available.")
+                    terminal.write()
                     continue
                 if command == "/status" and not argument:
                     if goal_id is None:
-                        print("\nNew session; nothing saved until your first request.\n")
+                        terminal.write("\nNew session; nothing saved until your first request.\n")
                     else:
                         _chat_status(args.state, goal_id, args)
                     continue
@@ -1354,7 +1402,8 @@ def _chat(args: argparse.Namespace) -> int:
                     export_args = parser.parse_args(shlex.split(argument))
                     export_args.review = reviewed[goal_id]
                     exported = _code_command(args.state, goal_id, "export-code", export_args)
-                    print(_terminal_text(f"\nExported {exported['format']}: {exported['output_path']}\nSHA-256: {exported['sha256']}\n"))
+                    terminal.write("Export successful", color="green")
+                    terminal.write(terminal_text(f"\nExported {exported['format']}: {exported['output_path']}\nSHA-256: {exported['sha256']}\n"))
                     continue
                 raise ValueError("Unknown command or arguments. Use /help.")
 
@@ -1375,7 +1424,9 @@ def _chat(args: argparse.Namespace) -> int:
             result = execute(goal_id, run_args)
         except Exception as exc:
             last_status = 1
-            print(_terminal_text(f"\nError: {exc}\n"))
+            terminal.field("\nError", str(exc), color="red")
+            if goal_id is not None:
+                terminal.write("/continue retries unchanged; /status for details.\n")
 
 
 def _add_state_option(parser: argparse.ArgumentParser) -> None:
@@ -1602,10 +1653,15 @@ def _emit(payload: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     interactive = False
+    using_tui = False
     try:
         args = build_parser().parse_args(argv)
         interactive = args.command in {None, "chat"}
         if interactive:
+            if interactive_terminal():
+                using_tui = True
+                with PiTerminal() as ui:
+                    return _chat(args, ui)
             return _chat(args)
         payload, status = _dispatch(args)
         _emit(payload)
@@ -1619,9 +1675,15 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         _emit({"status": "cancelled", "result": "CLI interrupted by Ctrl-C", "exit_code": 130})
         return 130
+    except BrokenPipeError as exc:
+        if using_tui:
+            print("Interactive terminal disconnected; run cancelled.", file=sys.stderr)
+            return 130
+        _emit({"error": str(exc), "type": "BrokenPipeError"})
+        return 1
     except Exception as exc:
         if interactive:
-            print(_terminal_text(f"Error: {exc}"), file=sys.stderr)
+            print(terminal_text(f"Error: {exc}"), file=sys.stderr)
         else:
             _emit({"error": str(exc), "type": exc.__class__.__name__})
         return 1

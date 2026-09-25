@@ -459,6 +459,117 @@ class SandboxRepositoryToolsTests(unittest.TestCase):
             self.assertTrue(limited["truncated"])
             self.assertEqual(1, limited["scope"]["max_files"])
 
+    def test_empty_root_scope_discovers_and_searches_without_file_access(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "code.py").write_text("value = 42\n", encoding="utf-8")
+            (root / ".env").write_text("value = secret\n", encoding="utf-8")
+            sandbox = self._sandbox(root)
+            listing = sandbox.discover({"path": ""})
+            self.assertEqual(".", listing["path"])
+            self.assertEqual(["code.py"], [item["path"] for item in listing["files"]])
+            self.assertFalse(listing["truncated"])
+            for search, query in (
+                (sandbox.search, {"query": "value"}),
+                (sandbox.regex_search, {"pattern": r"value = \d+"}),
+            ):
+                result = search({"path": "", **query})
+                self.assertEqual(
+                    [("code.py", 1)],
+                    [(item["path"], item["line"]) for item in result["matches"]],
+                )
+                self.assertEqual(".", result["scope"]["path"])
+                self.assertFalse(result["truncated"])
+            with self.assertRaises(SandboxError):
+                sandbox.read({"path": ""})
+            with self.assertRaises(SandboxError):
+                sandbox.write({"path": "", "content": "not a file"})
+
+    def test_scoped_tools_return_paths_usable_by_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src/nested").mkdir(parents=True)
+            (root / "src/nested/code.py").write_text("other\nvalue = 42\n", encoding="utf-8")
+            (root / "decoy.py").write_text("value = 99\n", encoding="utf-8")
+            sandbox = self._sandbox(root)
+            for scope in ("src", "src/nested", "src/nested/code.py"):
+                with self.subTest(scope=scope):
+                    listing = sandbox.discover({"path": scope})
+                    self.assertEqual(
+                        ["src/nested/code.py"], [item["path"] for item in listing["files"]]
+                    )
+                    for search, query in (
+                        (sandbox.search, {"query": "value"}),
+                        (sandbox.regex_search, {"pattern": r"value = \d+"}),
+                    ):
+                        result = search({"path": scope, **query})
+                        self.assertEqual(
+                            [("src/nested/code.py", 2)],
+                            [(item["path"], item["line"]) for item in result["matches"]],
+                        )
+                        match = result["matches"][0]
+                        read = sandbox.read({
+                            "path": match["path"],
+                            "start_line": match["line"], "end_line": match["line"],
+                        })
+                        self.assertEqual(read["content"], "value = 42\n")
+                        self.assertFalse(result["truncated"])
+
+    def test_file_scope_is_isolated_bounded_and_tracks_selected_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "selected.txt"
+            selected.write_text("value\nvalue\n", encoding="utf-8")
+            unrelated = root / "a-unrelated.txt"
+            unrelated.write_text("value" * 1000, encoding="utf-8")
+            sandbox = self._sandbox(root)
+            for search, query in (
+                (sandbox.search, {"query": "value"}),
+                (sandbox.regex_search, {"pattern": "^value"}),
+            ):
+                args = {"path": "selected.txt", "max_files": 1, "max_entries": 1, **query}
+                first = search(args)
+                self.assertEqual([1, 2], [item["line"] for item in first["matches"]])
+                self.assertEqual(first["snapshot"]["files"], 1)
+                self.assertEqual(first["snapshot"]["bytes"], selected.stat().st_size)
+                unrelated.write_text("changed elsewhere", encoding="utf-8")
+                self.assertEqual(first["snapshot"], search(args)["snapshot"])
+                for limit, exclusion in (
+                    ("max_file_bytes", "file_size_limit"),
+                    ("max_scan_bytes", "scan_bytes_limit"),
+                ):
+                    limited = search({**args, limit: 3})
+                    self.assertEqual(limited["matches"], [])
+                    self.assertTrue(limited["truncated"])
+                    self.assertEqual(limited["exclusions"][exclusion], 1)
+                limited = search({**args, "max_results": 1})
+                self.assertTrue(limited["truncated"])
+                self.assertFalse(limited["snapshot"]["truncated"])
+                selected.write_text(selected.read_text() + "new\n", encoding="utf-8")
+                self.assertNotEqual(first["snapshot"]["id"], search(args)["snapshot"]["id"])
+
+    def test_file_scopes_refuse_symlinks_credentials_traversal_and_special_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "stage"
+            root.mkdir()
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (outside / "code.py").write_text("private", encoding="utf-8")
+            (root / "link.py").symlink_to(outside / "code.py")
+            (root / "linked").symlink_to(outside, target_is_directory=True)
+            (root / ".env").write_text("synthetic", encoding="utf-8")
+            os.mkfifo(root / "pipe")
+            sandbox = self._sandbox(root)
+            for path in ("link.py", "linked/code.py", ".env", "../outside/code.py", "pipe"):
+                for operation, arguments in (
+                    (sandbox.discover, {}),
+                    (sandbox.search, {"query": "private"}),
+                    (sandbox.regex_search, {"pattern": "private"}),
+                ):
+                    with self.subTest(path=path, operation=operation.__name__):
+                        with self.assertRaises(SandboxError):
+                            operation({"path": path, **arguments})
+
     def test_regex_search_rejects_invalid_and_kills_expensive_patterns(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

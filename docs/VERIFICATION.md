@@ -551,6 +551,338 @@ no fresh-test, generalization or superiority claim follows. Real-task completion
 under practical declared limits and multi-day developer use remain acceptance
 gates before UI expansion.
 
+## File-scoped search efficiency repair
+
+**Classification: INCREMENTAL / EMPIRICAL.** The previous repaired matrix
+recorded 366 tool calls, including 117 literal/regex searches. **58 searches
+failed on regular-file paths** because the scanner admitted only directories.
+Models retried or used broader searches/reads; this was an implementation
+defect, not evidence that the requested paths were unsafe.
+
+Discovery, literal search and regex now share file/directory scope admission.
+Paths returned from nested scopes are relative to the stage root and directly
+usable by read/edit tools. File scopes avoid unrelated traversal without
+weakening no-follow, credential, size or truncation rules.
+
+A frozen replay of all 58 affected calls reproduced 58 failures before the
+repair and **58 successful queries, zero errors** afterward. It checked expected
+match lines, usable paths, one-file byte accounting and unchanged candidate
+hashes. Cases SHA256:
+`739943d43bf96d786a207601495d59633815875184394a5960e3cfe11796d231`.
+Evidence remains outside Git in `goal-native-scope-efficiency-20260924`.
+The replay uses retained **end-of-phase candidates**, not reconstructed
+intermediate states; it establishes corrected operations, not saved model
+tokens or a latency improvement over fast refusals.
+
+**121 application tests and four legacy evaluator safeguards passed**, including
+actual Docker integration. New behavioral regressions cover nested-scope
+readback, file-only limits and snapshot changes, symlink/credential/traversal
+refusal and non-regular files. ResourceWarnings remained errors.
+
+Independent read-only code and evidence reviews accepted the scoped repair and
+mechanistic replay, not a token-efficiency claim. A supplementary resource probe
+ran 400 successful searches plus 40 invalid-regex rejections under a 48-descriptor
+limit; the same nine descriptors remained before and after. Forced stat/open
+replacement with a FIFO or symlink admitted zero files, reported an exclusion
+error, did not hang, and left the outside synthetic marker untouched.
+
+The subsequent live comparison was frozen before calls under registration SHA256
+`215127f401119942732d19ba294e32b067ac539cb93c3c79ed21bde6695dab1c`
+and preparation SHA256
+`e6427929da00ad8cf3de0f657dcc2103f367658be1dfcf98a235329a001ebef9`.
+All 40 pre-fix/reference qualification checks passed again. Each task's source
+and reference snapshots, checker bytes, worker/checker images, setup commands and
+expected observations matched the prior preparation. Model, thinking setting,
+arm order, network policy and 12-round / 180-second / 65,536 context bounds were
+unchanged. This is one additional development run, not held-out validation.
+
+## Reproducer-first workflow — 2026-09-25
+
+**Classification: INCREMENTAL / EMPIRICAL for local admission checks; coding
+improvement remains SPECULATIVE.** `goal_native/context.py` now instructs the
+canonical worker to use the declared environment, run the reproducer early,
+inspect its failure before a general fix, and check changed source and
+compatibility before claiming completion. Failures, unrun checks and execution
+blockers must remain explicit. This is prompt guidance, not enforced ordering
+or trusted acceptance. Native Pi, tool authority and run budgets are unchanged.
+
+The completed post-search-fix report in
+`/tmp/goal-native-coding-file-scope-measurement-20260924/report.json` has SHA256
+`7406b51081e7ed7756cd65bcf222961c06e14f9c576176accd940b183b88ab02`.
+Goal Native passed 2/20 phase checks; native Pi passed 4/20; neither finished
+any phase. Stops were respectively 10/5 round limits, 3/7 context limits and
+7/8 provider usage-limit errors. All 15 error traces contain the subscription
+usage-limit response. Zero search-tool errors remained, but lower call counts
+and elapsed time cannot establish efficiency with quota-denied attempts.
+All 80 before/after retained trace hashes and byte counts were verified.
+
+Trace diagnosis selected `flask-5786-redirect-session` and
+`prettier-1422-typescript-namespace-export`. Flask's cold phase made speculative
+edits without executing its reproducer; continuation omitted the documented
+source import path. TypeScript's cold phase spent all 12 calls on discovery
+without an edit or command; continuation initially omitted its dependency path
+and still made no edits. These motivate the guidance, not a claim it works.
+
+Local verification: **7 context and 9 worker checks passed** with Python 3.12.
+The initial system-Python worker run was rejected by the existing Python 3.11+
+runtime requirement. An initially longer prompt also exceeded the existing
+small-task context check; the final concise version passes without changing
+tests or budgets. A throwaway direct `compile_context` smoke admitted both
+selected tasks' cold/continuation requests and preserved each latest request.
+This establishes request construction, not live model compliance.
+
+### Live two-task follow-on
+
+On explicit continuation, actual Codex/Luna access worked again. One Flask cold
+phase was registered first as a provider-access/workflow probe; the remaining
+phases were registered before their calls. This is Goal Native only, not a
+new paired comparison. Model and 12-round / 180-second / 65,536 context limits
+were unchanged; no retries, network grant or provider substitution occurred.
+
+| Task | Cold | Continuation | Independent outcome |
+| --- | --- | --- | --- |
+| Flask redirect/session | round limit | round limit | checker error in both phases; raw candidate execution raises request-context error |
+| TypeScript namespace export | context limit | round limit | failed in both phases |
+
+**Zero of four phases finished or earned an independent pass.** TypeScript
+executed the correctly configured reproducer on call 3 and attempted an edit,
+unlike the previous discovery-only cold phase, but still failed its checks.
+Flask still tried unavailable `python`, omitted the source import path, and
+edited without running the requested reproducer. Its candidate now raises
+`RuntimeError: Working outside of request context`; reference checks pass.
+The checker wrapper reports `error` because the exceptional candidate path
+omits registered behavioral check names. That is not a candidate pass or a
+proven checker-environment failure.
+
+Evidence is retained under `/tmp/goal-native-reproducer-first-access-20260925`:
+`result.json`, `cold-check.json`, and per-task phase `result.json`/`trace.jsonl`.
+Initial registration SHA256:
+`5d22ad4d01f610c7134012729c67e402b81b1213235cc76b36b91c095ca4db6c`;
+follow-on registration SHA256:
+`d2b8a1d1a6021cf97630c5142218832f165e784e39797e96d4cf3a725f97028f`.
+All four trace hashes/byte counts match recorded results; selected source
+snapshots stayed unchanged. An initial pre-provider setup attempt rejected
+the `/tmp` symlink path; resolving it to the real directory allowed execution.
+
+The live acceptance gate failed. Prompt guidance alone did not establish
+reliable reproduction or completion; quota is no longer the observed blocker.
+Next experiment should distinguish environment/setup friction from insufficient
+working budget on these retained failures before spending on a full matrix.
+Fresh-task promotion and independent review remain open.
+
+## Setup, budget and fresh CLI gate — 2026-09-25
+
+**Classification: INCREMENTAL / EMPIRICAL.** This closes bounded execution and
+delivery checks, not general reliability, comparative efficiency, external
+developer acceptance or scientific novelty. All attempts were retained.
+No additional harness implementation defect was isolated; no default budget,
+provider, reasoning setting, tool authority or sandbox boundary was changed.
+
+### Controlled historical diagnosis
+
+Executable reproductions were frozen outside the checkout and verified with
+the same dependency images: both selected pre-fix sources fail and both
+references pass. The commands explicitly name `python3`/`PYTHONPATH=src` and
+Node/`NODE_PATH`. The setup-only run retained 12 rounds / 180 seconds / 65,536:
+Flask passed both independent checks but neither phase finished; TypeScript
+failed both independent checks despite a finished continuation response. Its
+local reproduction omitted the original comment-bearing case, illustrating
+why worker success claims do not replace the independent checker.
+
+A separate control changed only working limits to 32 rounds / 300 seconds /
+131,072 while retaining the setup prompts and model. All four independent
+phase checks passed; three phases finished directly. Flask continuation hit
+the context ceiling after 25 rounds. Explicitly reopening its unchanged request
+in a fresh stage with the same limits finished in 16 further rounds and passed
+the changed-phase checker. This is retained recovery, not a replacement success
+row or evidence of single-run completion. Provider payloads report reasoning
+effort `none`; that setting was held fixed throughout these controls.
+
+Evidence roots and report SHA256:
+
+- `/tmp/goal-native-coding-setup-control-20260925`: frozen commands and
+  source/reference reproduction receipts.
+- `/tmp/goal-native-coding-setup-only-20260925/report.json`:
+  `b732111ffac5508b588d93be74e8590fd281b933608d6e26ca862aa28f2efe3b`.
+- `/tmp/goal-native-coding-budget-control-20260925/report.json`:
+  `d9cdcb1c03e645c060cd80691a4f2696acb3c0ececcef09d200f3d3d6f47abfd`.
+- That root's `flask-5786-redirect-session/resume/result.json`:
+  `4311648bd35736de0ff6c01dae36ff9b97788aefe5c02256e99a523d6290b976`.
+
+### Fresh small-project CLI delivery
+
+Two author-designed tasks, not external benchmark samples, were frozen with
+named independent checks before model calls. Python repairs an exact-cent CSV
+ledger and then adds an inclusive minimum-total filter. TypeScript repairs a
+dependency-layer scheduler and then adds completed-job handling with full-graph
+validation. The original sources pass only 1/9 and 1/10 cold checks respectively.
+Both use actual `python3.12 -m goal_native` processes with Docker, Luna and
+the explicit 32 / 300 / 131,072 limits.
+
+| Workflow | Cold | Changed request after process restart |
+| --- | --- | --- |
+| Python CSV ledger | finished, 9/9 checks | finished, 11/11 checks |
+| TypeScript scheduler | finished, 10/10 checks | finished, 15/15 checks |
+
+Before Python's cold run, a deliberately declared 4,000 ceiling stopped before
+the first invocation (zero rounds). A new CLI process resumed without a source
+flag, recovered selected files into a fresh stage, and completed the request.
+Each changed request likewise ran in a new CLI process using saved files.
+
+Parent review then found an uncovered scheduler bug: completing a non-root job
+could allow it to reappear in a later batch. The original candidate failed a
+direct execution probe. A new explicit review request through the harness
+repaired it, added `schedule.test.ts`, removed four scratch outputs, and finished.
+The same probe passed afterward. Original passing rows are retained, not
+retroactively described as a complete bug-free implementation.
+
+Actual `diff` reviews bound final candidates; `export-code` emitted patches.
+Both patches passed `git apply --check`, applied to disposable copies of the
+original selected sources, and passed the complete continuation checks there:
+Python 11/11; TypeScript 15/15 plus its added scheduler regression script.
+Original selected sources remained unchanged. No manual candidate code repair
+or automatic host-source apply was used.
+
+Evidence under `/tmp/goal-native-fresh-gate-20260925`:
+
+- Frozen `registration.json` SHA256:
+  `69a7bba7f46bf3dd6d555951515dd83775e64f813163c023f4940117323c798d`.
+- Original four-phase `report.json` SHA256:
+  `726cd836b2884098e49c5860e3f6dc95406b3bb74306f679c03e50456151f568`.
+- Final `export-proof.json` SHA256:
+  `7fdb4201177f465f50fb8e618616d599c25c911efaa9342c83303060e0ae600b`.
+- `python/change.patch` SHA256:
+  `7bc63d3782203af051ba43f663b21e860082eb29316fecfdff688523baa6d41f`.
+- `typescript/change.patch` SHA256:
+  `a17637d748a200575258d2b8bfd55db2a9a2a6647d170a89695a446579b17582`.
+- Per-language CLI outputs, checker receipts, reviews and export receipts;
+  TypeScript retains `review-before.json`, `review-after.json` and review-fix output.
+
+Independent specialist review is complete. The managed launcher first failed
+because this checkout has no `scripts/fleet.mjs`; no managed worker started and
+no launcher code was created. The owner then explicitly authorized two native
+read-only review agents for this task. Both returned scoped approval with no
+blocking findings. Python review also assessed the canonical prompt guidance;
+TypeScript review distinguished the initial missed edge from its final repair.
+`independent-reviews.json` retains their conclusions and limitations.
+
+The bounded coding execution/recovery/reviewed-delivery gate is complete.
+These reviews inspect settled diffs and retained executed proof; they do not
+substitute for new execution or establish exhaustive correctness. Multi-day
+external developer use, larger unseen repositories, repeated matched runs and
+general reliability remain open, separate acceptance requirements.
+
+## Existing-repository deliveries and terminal UX — 2026-09-25
+
+Classification: **INCREMENTAL / EMPIRICAL**. Three existing-repository tasks
+ran through actual Goal Native CLI processes, isolated Docker execution,
+persisted requests/stages, review and patch export. Parent-applied source changes
+were independently exercised. These are assisted maintainer deliveries, not an
+autonomous-success rate, external acceptance or a model comparison.
+
+| Delivery | Provider runs | Follow-up requests | Summed run seconds | Reported input / output tokens | Invocations without usage |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Python checker exception handling | 4 | 2 | 1,083.77 | 1,948,367 / 23,237 | 1 |
+| Repair Atlas supplied case tracks | 3 | 2 | 839.97 | 1,451,089 / 16,507 | 0 |
+| Multi-file CLI UX | 6 | 4 | 1,355.49 | 2,182,768 / 22,266 | 2 |
+
+Times sum individual run processes; tasks overlapped. Setup, review and parent
+verification are excluded, so these are not end-to-end wall-clock times.
+Token figures are reported subtotals, not estimates for missing invocations.
+Reported cached tokens were 678,016 / 495,232 / 845,952 respectively; do not add
+them to reported totals or infer billing cost. Cost remains unknown.
+The CLI's final run was a one-round closing report after parent verification,
+not another implementation run.
+
+All initial Luna attempts stopped at context or time limits. Explicit
+Luna-to-Astra repair runs, detailed parent feedback and further continuation
+were required; the failures remain in the records. The declared working limits
+were 48 rounds / 300 seconds / 196,608 conservative context tokens, not defaults.
+An initial invalid 600-second declaration and Docker-daemon failure occurred
+before provider execution. The owner authorized a Docker Desktop restart.
+The frontend dependency image used the existing lockfile and no worker network.
+Its 512 MiB/read-only environment blocked normal bundling; reviewed source was
+built independently on the host instead. No sandbox boundary was relaxed.
+
+### Delivered behavior and independent proof
+
+- **Checker:** complete registered names survive candidate import/probe failures;
+  earlier observed results survive later failures, including stream close.
+  Teardown exceptions cannot report all-passed. The unchanged independent
+  validator classified the retained real broken Flask candidate as **failed**
+  rather than a protocol error in both cold/changed phases, preserving successful
+  import/target checks. The real post-fix reference passed both phases.
+- **Frontend:** supplied annotations/variants render through JBrowse's existing
+  `FromConfigAdapter`; safe integer, half-open coordinates, wrong-locus filtering
+  and stable distinct/deduplicated identities are checked. `npm test` and the
+  production build passed. Actual browser screenshots showed synthetic A→B
+  feature replacement at the same locus and removal of empty case tracks.
+  The fixture was corrected from `chr1` to the existing public reference's `1`;
+  contig aliases, biological validation and private/imported datasets were not
+  exercised. The generated `tsconfig.tsbuildinfo` hunk was not applied.
+- **CLI:** grouped help, short session IDs/states, selected-not-sent source
+  metadata, assistant/tool labels, errors/recovery and restrained TTY colors.
+  Real 48-column PTYs confirmed SGR only in the color-enabled case, no readline
+  marker leakage, `NO_COLOR`/`TERM=dumb` suppression and plain automation JSON.
+  Live Astra wrote/read/SHA-edited/executed a script yielding `3`; a changed
+  request stopped at a 3,500 ceiling. After process exit/reopen, `/resume 1` and
+  explicit `/continue --context-budget 65536` recovered fresh staged files and
+  yielded `4`. Exactly two requests remained, no task-tool failures occurred,
+  and the goal stayed draft with no acceptance.
+
+Parent integration changes are explicit: canonicalize the checker's temporary
+build root for macOS `/var` aliases; remove a test of unchanged JSON forwarding;
+remove an invented empty “Assistant” reply exposed by a real budget stop.
+The parent also clarified ranged-read guidance, the complete-file meaning of
+`max_bytes`, and copying the full 64-hex edit digest. A subsequent live read/edit/
+run/restart flow succeeded without tool errors. This repairs misleading guidance
+and the observed empty-reply UX; it does not establish that recurrent model
+editing/build failures are eliminated.
+
+Final focused command:
+`python3.12 -m unittest tests.test_python_checker_failures tests.test_cli_terminal tests.test_cli_transport tests.test_coding_evaluation -v`
+passed **26 tests**. Context and Worker suites separately passed **7** and **9**.
+The final two-line empty-response correction was subsequently exercised in the
+actual stopped/reopened PTY. Two owner-authorized read-only specialist reviews
+found no actionable defects; no review reran tests or substituted for execution.
+
+**The full suite is not green.** Its earlier 135-test run recorded nine failures,
+one error and eight skips. Four failing new pytest subcases were repaired by
+canonical temporary paths and passed in the focused rerun. Five macOS sandbox
+process-launch failures (`posix_spawn` at the Homebrew Python framework path)
+and the login Ctrl-C termination/cleanup error remain unresolved. They are not
+hidden by the passing Docker proofs. Vite's large-chunk warning also remains.
+
+Evidence root: `/tmp/goal-native-real-deliveries-20260925` (local, not committed):
+`scorecard.json`, `independent-reviews.json`, `focused-verification.json`,
+`checker/upstream-proof-canonical.json`, each task's registrations/run records/
+exported patch, `typescript/browser-proof.json` and `browser-{1,2}.webp`,
+`terminal-gates.json`, `terminal-live-proof.json` and terminal transcripts.
+Original failed attempts and historical checker registrations were not rewritten.
+`goal-delivery-integrated.patch` includes the disclosed parent source/test fixes
+and passes apply-check against the preserved original snapshot; raw harness
+exports remain separate. The frontend's initial nested-directory apply skipped
+paths; root-relative `--directory=apps/web` application corrected it, followed by
+direct execution of the applied mapping checks. No push was made: Repair Atlas
+has no configured origin, and Goal Native retains mixed pre-existing work with
+an unresolved full-suite gate.
+
+### External-developer handoff — still open
+
+No external participant has been nominated or observed. A separate developer
+must use their own non-sensitive Python/TypeScript task, not these maintainer
+fixtures. First bootstrap and run `doctor`; use the documented Docker profile
+while default-host failures remain unresolved. Select a reviewed source directory
+explicitly; freeze the task, environment, limits and acceptance command before
+starting. Record elapsed time, provider-reported usage/unknowns, feedback and any
+manual edits. Exit/reopen once, introduce a genuine requirement change, inspect
+`/status`, and use explicit continuation rather than silent retry.
+
+Finish with `/diff`, `/export`, independent patch inspection/application and
+the task's acceptance command in the developer's repository. Report failures,
+not just the final passing attempt. Multi-day external acceptance remains open;
+this handoff and the three assisted deliveries do not satisfy it.
+
 ## Limits and next acceptance
 
 1. **Basic live CLI gate satisfied:** owner authorization and Luna task execution
@@ -570,3 +902,349 @@ gates before UI expansion.
    simplification stays behind developer use of the CLI, not ahead of it.
    Multi-day Python/TypeScript dogfooding, fresh broader benchmarks, independent
    success-claim labeling and additional host platforms remain open gates.
+
+## Pi terminal, persistent command and default-host repairs — 2026-09-25
+
+**Classification: INCREMENTAL / EMPIRICAL.** No comparative quality, token
+efficiency, external-developer acceptance or general safety claim follows.
+
+The interactive TTY now uses the pinned Pi TUI's main-screen differential
+renderer and multiline editor through `bridge/terminal.mjs`. Python retains
+the Store, Worker and all tool/credential authority; dedicated pipes exchange
+only submitted text and presentation events. A compact goal panel displays
+the current goal and recent goals with numbered, labeled status lights.
+`running` refers only to the active CLI process, while a persisted incomplete
+attempt is `unfinished`; a finished run says `run finished / review`, never
+accepted. JSON commands remain plain; non-TTY input retains the line interface.
+Opt-in `bootstrap.py --install-command` installs a checkout-targeting `goal`
+wrapper without replacing unrelated commands or editing shell startup files.
+
+A separate temporary `bin/goal` installed by `_install_command()` was found
+by `PATH` from another caller directory and executed real `goal doctor` with
+exit 0, without creating the caller-relative trial state; repeat installation
+reused the identical wrapper. The installer regression checks also reject
+conflicting files and symlinks without changing them. This was an isolated
+command smoke, not a new bootstrap run or shell configuration change.
+
+An actual 100-column PTY displayed two recorded goals with paused/draft lights;
+`/resume 2` selected the recorded draft. Its Pi editor ran in raw mode, slash
+completion submitted `/status`, resize and `/exit` restored terminal modes.
+An actual 48-column PTY rendered multiline input, a running goal, streamed
+assistant text and the subsequent paused goal on Ctrl-C. An isolated loopback
+provider fixture exercised multiline submission, partial output cancellation,
+exit/reopen, `/resume 1`, unchanged `/continue`, one retained user request,
+finished run, draft goal and zero acceptances; this is **synthetic provider**
+evidence, not a live-model claim.
+
+Framework-Python `Python.app` exec paths were added to the macOS profile
+without permitting arbitrary process execution. After-proof on macOS Python
+3.12: the real multi-file Python sandbox check passed, as did host read/write,
+network, fork and unrelated exec denial. OAuth login Ctrl-C with an isolated
+auth path exited `130` with no credential saved after closing its readline
+loop. Neither probe used an account login.
+
+After the review repairs, `python3.12 -W error::ResourceWarning -m unittest
+discover -s tests -v` ran **140 tests: 132 passed, eight skipped**.
+The earlier pre-review full suite ran 138: 130 passed, eight skipped.
+`python3.12 -m unittest -v evaluation.test_evaluator`: four safeguards passed;
+the four-arm comparison remains incomplete and non-claimable.
+
+`.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -v`
+ran 138 and failed eight Python-checker cases because this existing venv
+lacks `pip` (`No module named pip`); its other tests passed, eight skipped.
+The previous five sandbox-launch failures and login cancellation error did
+not recur in the supported-Python full suite. Installation still requires
+bootstrap with a pip-capable Python environment; this run did not perform
+a new source installation or real OAuth authorization. Multi-day external
+use, broader held-out comparisons and provider cancellation/accounting under
+this new TUI remain separate gates.
+
+Independent read-only code review identified three actionable edge cases:
+OAuth/provider-supplied terminal controls in login text; a renderer SIGTERM
+while the Worker remained active; and a partial user command after a failed
+installer write. The fixes sanitize login display values, cancel/fence on
+renderer loss (the actual process fixture now exits 130 with a paused goal,
+cancelled attempt and no live invocation), and install the wrapper atomically
+without replacing a concurrent command. The focused Pi terminal, installation
+and subscription suites ran **16 checks, all passed** after these changes.
+An account-authenticated login and model-driven task with the new Pi UI
+remain untested; external developer acceptance remains open.
+
+## Validated virtualenv pip recovery — 2026-09-25
+
+**Classification: INCREMENTAL / EMPIRICAL.** This is setup reliability, not a
+coding-quality or provider-token efficiency result. The existing checkout
+`.venv` had no `pip`: the earlier full-suite run above failed eight checker
+cases on `No module named pip`. Python 3.12's bundled `ensurepip` was available.
+Bootstrap now checks for `pip` only **after** `_ensure_venv()` verifies the
+selected interpreter's version and exact checkout prefix, and after the
+pinned pi checkout check. If absent, it runs offline `ensurepip --upgrade`
+inside that environment; a present `pip` is not upgraded, and failure to
+run `pip --version` stops setup before editable installation.
+
+Before proof: a fresh disposable `venv --without-pip` could not run
+`python -I -m pip --version`. After the new bootstrap function, its isolated
+`pip --version` succeeded from inside that venv and repeat provision left the
+version unchanged. The same path installed bundled `pip 25.0.1` into the
+validated Goal Native checkout `.venv` without touching system Python.
+Previously failing checker suite:
+`.venv/bin/python -W error::ResourceWarning -m unittest
+tests.test_python_checker_failures -v` — nine tests passed.
+The full checkout-environment command
+`.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -v`
+ran **141 tests: 133 passed, eight skipped**. This does not retrofit a
+historical failed run or count it as passing.
+
+`./goal doctor --model gpt-6-luna` then reported `ok: true` for the
+default macOS Python runtime, pinned built pi, and existing Codex OAuth
+readiness; it made no provider call.
+
+Independent read-only bootstrap review found no actionable defect in the
+validated-prefix, offline provision and idempotence paths. It retained two
+untested host assumptions: same-user replacement of `.venv` between prefix
+validation and provisioning, and virtual environments deliberately created
+with system-site packages, where an external `pip` module may be importable.
+Neither mode was used for the observed recovery; no safety claim for those
+configurations follows.
+
+Trace selection check before this fix: the retained post-search-fix coding
+matrix had 62 Goal Native `staged_read` calls, 53 explicitly ranged and nine
+unbounded; returned read-result JSON totaled about 429 KB. A synthetic
+64-artifact compiler admission took a median 24 ms. Those observations did
+not support changing read semantics or context admission to claim token
+savings. Next gate remains real external use and independent matched coding
+quality/efficiency evaluation.
+
+## Live Pi terminal coding and renderer-death recovery — 2026-09-25
+
+**Classification: INCREMENTAL / EMPIRICAL.** The actual interactive Pi
+terminal used existing Codex OAuth readiness with `gpt-6-luna`, no source
+directory or network grant, and explicit `4` rounds / `90` seconds / `32768`
+conservative context per run. A disposable state directory kept task files
+and session history outside the checkout. The first request asked for
+`total.py` summing integers 1–10, executed inside staged Python and reported
+stdout `55`. Actual run: finished in three invocations; provider-reported
+usage 4,392 input / 86 output tokens. `/status`, `/diff` and `/export` ran
+through the TUI. The patch applied in a separate empty directory, whose
+independent `python3.12 total.py` printed `55`.
+
+After process exit and reopening the same state, `/sessions` and `/resume 1`
+selected the saved goal. A genuine new request changed the bound to 1–20
+without supplying a source path; the new isolated stage contained
+`print(sum(range(1, 21)))`. The actual run finished in four invocations and
+reported 9,091 input / 189 output tokens; independent execution printed
+`210`. Exactly two requests and two finished run records remained, goal
+status `draft`, no acceptances. No comparison arm was run and subscription
+cost remains unknown. This is one author-directed small task, not a coding
+success-rate or token-efficiency benchmark.
+
+The first real-model PTY teardown exposed a cleanup defect: a terminal
+sometimes retained raw-mode flags after the CLI exited. Explicitly killing
+the Pi renderer with `SIGKILL` reproduced it deterministically: the
+controller exited 130 but `ICANON` stayed off. Python now saves the exact
+POSIX TTY attributes before launching Pi and restores them after child
+cleanup, even if the renderer cannot run its own shutdown handler.
+The same SIGKILL probe then exited 130 with exact mode restoration and
+no goal created. A separate actual PTY fault injection made `os.fdopen`
+fail after Pi spawned; this exposed a startup-only interrupt from the
+renderer masking the original error. Python now retains raw-descriptor
+ownership through initialization, reaps failed startup promptly, preserves
+an active exception through cleanup, and Node only interrupts an active
+controller after its first prompt. Six focused terminal tests passed, including
+active-run cancellation and exact mode restoration after both renderer loss
+and partial startup. The checkout environment's complete command
+`.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -v`
+ran **144 tests: 136 passed, eight skipped** after the startup fix.
+External multi-day use, larger nonoverlapping coding tasks and matched
+native-Pi efficiency remain open.
+
+## Renderer SIGKILL during active work — 2026-09-25
+
+**Classification: INCREMENTAL / EMPIRICAL.** In an actual macOS PTY, a
+loopback streaming provider deliberately withheld its final response. After
+the first assistant text, killing the Pi renderer with `SIGKILL` left the
+Python controller alive beyond five seconds with a running provider turn:
+Node could not execute its cooperative SIGINT handler. Previously tested
+`SIGTERM` did cancel but was not proof for uncatchable renderer death.
+
+The controller now watches renderer exit, arms interruption only while a
+CLI run is active and sends one SIGINT for abrupt nonzero exits. Node still
+sends an immediate SIGINT for cooperative busy shutdown and exits `130` as
+an acknowledgement so Python does not interrupt cleanup a second time.
+Output-channel failure during an armed run also enters the existing
+`KeyboardInterrupt` cancellation fence. With the provider response still
+withheld, the same SIGKILL PTY test exited `130` in about four seconds,
+retained a cancelled run and no acceptance, and restored exact terminal
+settings. All seven focused Pi terminal tests passed, including SIGTERM,
+idle SIGKILL, partial initialization and normal reopen.
+
+The full checkout suite command
+`.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -v`
+ran **145 tests with eight skips and one error**: an existing OAuth browser
+login Ctrl-C PTY test failed to observe process termination within its
+20-second window, then its cleanup raised `PermissionError` on process-group
+kill. The focused renderer tests passed; the full-suite result is **not
+green**. A separate isolated OAuth diagnostic did present the login URL,
+had `ISIG` off (Node readline owns the key), and completed with cancellation
+status `130` within six seconds after Ctrl-C; that does not erase the
+full-suite failure. The fixture diagnosis and subsequent rerun are recorded
+below; neither matched coding efficiency nor external developer acceptance
+is established.
+
+## OAuth Ctrl-C PTY fixture reliability — 2026-09-25
+
+**Classification: INCREMENTAL / EMPIRICAL.** The full-suite error above
+occurred in a test that used `pty.fork()` after the long-running test process
+had loaded other runtimes; whether inherited post-fork state caused that
+timeout is **unproven**. Its cleanup attempted only process-group `SIGKILL`,
+then raised `PermissionError`, masking the first assertion. A separately
+spawned real PTY diagnostic presented the OAuth URL, accepted the Ctrl-C
+byte with Node readline in raw mode, exited `130`, and kept credentials
+unwritten.
+
+The integration test now uses `pty.openpty()` plus a fresh `subprocess.Popen`
+session, as the interactive terminal fixture already does, rather than
+forking the entire loaded test process. It still sends the actual Ctrl-C
+byte, checks the CLI's cancelled JSON/exit `130`, and verifies the isolated
+auth file has no Codex credential. If group teardown is denied after a test
+failure, it kills and reaps the direct child instead of hiding the primary
+error. The focused test passed in **0.587 seconds**. The complete checkout
+command `.venv/bin/python -W error::ResourceWarning -m unittest discover
+-s tests -v` then ran **145 tests: 137 passed, eight skipped**. One green
+suite does not establish that OAuth/network or multi-day login reliability
+is solved; browser/device authorization was not completed.
+
+## Empty-root discovery scope consistency — 2026-09-25
+
+**Classification: INCREMENTAL / EMPIRICAL.** The retained post-search-fix
+coding report (`report.json` SHA256
+`7406b51081e7ed7756cd65bcf222961c06e14f9c576176accd940b183b88ab02`)
+contains eleven `staged_files` calls with explicit `path: ""` in eleven of
+twenty Goal Native phases. All eleven failed with “a relative staged path is
+required”; `path: "."` on the same tool already meant the stage root. A
+disposable real Sandbox also refused empty-root discovery, literal search
+and regex search while the corresponding dot-root operations succeeded.
+
+The shared staged path parser now treats the empty string as the root
+**only for root-allowing discovery/search/regex**. File read/write/edit
+paths remain nonempty and protected. Replaying all eleven recorded call
+arguments against their corresponding retained **end-of-phase** candidates
+produced eleven successful discoveries with exact results equal to dot-root
+calls; ten reported truncation at the caller's declared file limit.
+This establishes an API mismatch removed, not recovered historical
+provider tokens, faster model completion or complete coverage of those
+large repositories. Eleven focused repository-tool tests passed, including
+one behavioral root/credential/file-denial regression.
+
+The checkout's complete command `.venv/bin/python -W error::ResourceWarning
+-m unittest discover -s tests -v` then ran **146 tests: 138 passed, eight
+skipped**. This verifies the code path and existing safety tests, not a
+matched provider-efficiency improvement.
+
+## Renderer watcher startup cleanup — 2026-09-25
+
+**Classification: INCREMENTAL / EMPIRICAL.** The Python controller previously
+started its renderer-watcher thread **after** the guarded Pi startup block
+and after redirecting `sys.stdout`. A real disposable PTY with injected
+`threading.Thread.start` failure showed the initialization error surfaced,
+but the Node renderer remained alive and the original TTY mode was not
+restored even after Python exited. This is a rare resource-failure edge, not
+evidence of ordinary TUI startup latency or coding efficiency.
+
+Watcher startup is now inside the same guarded initialization that handles
+`fdopen` and handshake errors. The caught error drives renderer cleanup
+and exact terminal restoration before propagation. The PTY fault-injection
+test exercises both failed `fdopen` and failed watcher startup, checks that
+the renderer was reaped and that the exact original TTY attributes survived;
+the watcher-start case failed those checks before the change and passed
+afterward. All seven focused Pi terminal tests passed, including normal
+reopen, active SIGTERM/SIGKILL cancellation and teardown exceptions.
+
+The complete checkout command `.venv/bin/python -W error::ResourceWarning
+-m unittest discover -s tests -v` then ran **146 tests: 138 passed, eight
+skipped**. The watcher-start fault is synthetic; the PTY and Node child
+were real.
+
+## Independent publication audit and boundary repairs — 2026-09-25
+
+**Classification: INCREMENTAL / EMPIRICAL for the previously exercised
+work; these new repairs require their own executed checks below.** Three
+read-only reviewers inspected the unpublished runtime, controlled-tool/native
+evaluation code, and public source/privacy claims. The privacy review found
+no credential values, private data or generated traces in the changed paths
+but did not approve runtime security by itself. The source reviewers identified:
+
+- The Pi renderer inherited the controller's environment, including potential
+  provider keys and `NODE_OPTIONS`. It now starts with a presentation-only
+  allowlist. This removes environment forwarding, not same-user filesystem
+  access or a general process isolation guarantee.
+- A renderer lost during work could trigger another interrupt while finalizing
+  the persisted cancelled run's display. The controller now drops UI events
+  after that renderer-loss cancellation instead of writing to the dead pipe.
+- A completed invocation could pass the goal/assignment snapshot fence and
+  start another staged tool call. New tool dispatch now requires a running
+  invocation; trusted review/acceptance of historical evidence is separate.
+- The native-pi adapter accepted lexical path comparisons and opened a
+  manifest-supplied session file before its session-directory confinement.
+  Canonical path and symlink checks now precede writes and session opening;
+  same-user concurrent path replacement remains outside this pre-open guard.
+
+The first post-review transport suite exposed a necessary distinction: two
+existing real pi-provider loopback tests failed with `invocation is not
+running` because the **next** provider request checked the preceding,
+already-finished invocation as if it were another tool dispatch. The Worker
+now requires that preceding turn to be terminal, then admits the next turn
+through `Store.invoke`'s atomic current goal/assignment checks. Controlled
+tools still require their **own** invocation to be running. The same six
+focused CLI transport tests then passed.
+
+The new PTY output assertions initially stalled the seven-test renderer suite:
+after the CLI exited, `select` reported a readable EOF forever and two test
+drain loops kept reading empty bytes. A timed stack dump identified each loop;
+both now stop on EOF. All **seven** Pi terminal tests passed with real PTYs
+and Node, including environment filtering, SIGTERM/SIGKILL active cancellation,
+saved cancelled outcomes and exact TTY restoration.
+
+The first native-path test run also exposed incomplete new fixtures; those
+were corrected to send the actual bridge `run` protocol with a run ID and
+canonical disposable paths. A separate real Node cold-session probe then
+failed with `native session file is missing`: Pi chooses a fresh session path
+*before* it creates the transcript file. Cold creation now confines that
+reserved output path, while continuation requires an existing regular
+non-symlink file before `SessionManager.open`. A disposable cold-to-continuation
+probe reopened the same persisted reference, with controller admission
+deliberately denied before either provider request. The permanent native
+regression covers that successful reopen alongside forged paths; all **12**
+coding-evaluation tests passed. It does not prove provider-backed model
+completion after this repair.
+
+The complete checkout command `.venv/bin/python -W error::ResourceWarning
+-m unittest discover -s tests -q` ran **152 tests: 144 passed, eight skipped**.
+The checks establish the repaired local boundaries, not general same-user
+host isolation, external developer acceptance, or comparative efficiency.
+
+A second independent read-only review found three further correctable edges:
+the watcher could signal again after a broken event pipe had already raised
+`KeyboardInterrupt`; Python continuation could follow a traversal-bearing
+`session_key` to an outside manifest before the Node validator ran; and
+`path.resolve()` had made the native adapter's absolute-path check vacuous.
+The event pipe and watcher now elect one interrupt under the same lock;
+Python validates the manifest key before reading it, and Node rejects relative
+paths before resolution. Focused real-PTY and native suites then passed
+**eight** and **12** checks respectively. The reviewer withdrew a separate
+tool-dispatch TOCTOU objection after examining the documented rule that an
+already-entered operation may finish inside an isolated stage; revocation
+fences *new* dispatch, and trusted acceptance/effects have separate checks.
+
+One complete-suite run subsequently caught an intermittent multiline PTY
+test submission that left text in the editor without starting a request.
+The synthetic `xterm` PTY had inherited the host's
+`TERM_PROGRAM=Apple_Terminal`; Pi can reinterpret `\r` as Shift-Enter using
+the real host's modifier state in that mode. The fixture now declares
+`TERM_PROGRAM=xterm` to match its synthetic terminal. This is a plausible
+environmental cause, **not** proof that the intermittent behavior is solved
+for real Apple Terminal sessions. The final complete checkout command
+`.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -q`
+ran **153 tests: 145 passed, eight skipped**. No provider-backed run was
+repeated after the native-path repair; its positive proof is the persisted
+cold-to-continuation session with deliberate pre-provider admission denial.

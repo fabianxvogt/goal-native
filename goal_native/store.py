@@ -860,6 +860,21 @@ class Store:
             rows = self._conn.execute("SELECT * FROM goals ORDER BY created_at, id").fetchall()
             return [self._goal_public(row) for row in rows]
 
+    def session_summaries(self) -> list[dict[str, Any]]:
+        """Small terminal projection: no artifacts, traces or assistant bodies."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT g.id, g.outcome, g.status, g.updated_at,
+                          r.status AS last_run_status, r.stop_reason
+                   FROM goals AS g
+                   LEFT JOIN run_attempts AS r ON r.id = (
+                       SELECT id FROM run_attempts WHERE goal_id = g.id
+                       ORDER BY created_at DESC, id DESC LIMIT 1
+                   )
+                   ORDER BY g.updated_at DESC, g.id DESC"""
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def goal(self, goal_id: str) -> dict[str, Any]:
         with self._read_snapshot():
             row = self._goal_row(goal_id)
@@ -1535,6 +1550,8 @@ class Store:
         """Fence a controlled tool dispatch; in-flight code still needs isolated resources."""
         with self._read_snapshot():
             invocation = self._invocation_row(invocation_id)
+            if invocation["status"] != "running":
+                raise PermissionError("invocation is not running")
             goal = self._goal_row(invocation["goal_id"])
             self._assert_invocation_fresh(self._conn, invocation, goal)
 

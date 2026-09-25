@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
+import os
+import shutil
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -15,6 +19,13 @@ from evaluation.coding import (
     normalize_usage,
 )
 from evaluation.coding_tasks import registration_document, validate_registration
+from evaluation.native import NativeSessionBridge
+from goal_native.worker import BridgeError, BridgeRPCError
+
+
+_NATIVE_BRIDGE_READY = bool(shutil.which("node")) and (
+    Path(__file__).resolve().parents[1] / "upstream/pi/packages/coding-agent/dist/index.js"
+).is_file()
 
 
 class CodingRegistrationTests(unittest.TestCase):
@@ -52,6 +63,214 @@ class CodingIdentityTests(unittest.TestCase):
             },
         )
         self.assertTrue(all(value is None for value in normalize_usage(None).values()))
+
+
+class NativePathTests(unittest.TestCase):
+    def _metadata(self, root: Path, phase: str) -> dict[str, object]:
+        root = root.resolve()
+        candidate = root / "candidate"
+        sessions = root / "sessions"
+        candidate.mkdir()
+        sessions.mkdir()
+        auth = root / "auth.json"
+        auth.write_text(json.dumps({
+            "openai-codex": {
+                "type": "oauth",
+                "access": "ACCESS_FIXTURE",
+                "refresh": "REFRESH_FIXTURE",
+                "expires": 4102444800,
+            },
+        }), encoding="utf-8")
+        return {
+            "phase": phase,
+            "provider": "openai-codex",
+            "model": "gpt-6-luna",
+            "tool_profile": "controlled-docker-coding",
+            "safety_profile": "offline-isolated-candidate",
+            "cwd": str(candidate),
+            "state_dir": str(root / "state"),
+            "session_dir": str(sessions),
+            "auth_file": str(auth),
+            "raw_trace_path": str(root / "traces" / "native.jsonl"),
+            "session_key": "task",
+            "task_id": "task",
+            "registration_sha256": "a" * 64,
+            "task_snapshot_sha256": "snapshot",
+            "candidate_identity": "candidate",
+            "check_identity": "checker",
+            "environment_identity": "environment",
+            "environment_snapshot_sha256": "b" * 64,
+            "continuation_ref": None,
+            "tools": [{
+                "name": "staged_read",
+                "description": "Read a staged file",
+                "parameters": {"type": "object"},
+            }],
+            "available_tools": ["staged_read"],
+            "request_id": "native-path-request",
+            "command_runtime": False,
+        }
+
+    def _run_rejected(self, metadata: dict[str, object]) -> None:
+        bridge = NativeSessionBridge(metadata=metadata, timeout_seconds=15)
+        bridge.run(
+            {"type": "run", "request_id": metadata["request_id"],
+             "run_id": metadata["request_id"],
+             "messages": [{"content": "continue"}], "timeout_ms": 12000},
+            rpc_handler=lambda _method, _payload: {},
+            event_handler=lambda _event: None,
+            cancel_event=threading.Event(),
+        )
+
+    @unittest.skipUnless(_NATIVE_BRIDGE_READY, "built native Pi bridge is unavailable")
+    def test_cwd_symlink_alias_is_rejected_before_state_or_trace_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = self._metadata(root, "cold")
+            alias = root / "cwd-alias"
+            alias.symlink_to(Path(__file__).resolve().parents[1], target_is_directory=True)
+            metadata["cwd"] = str(alias)
+            with self.assertRaisesRegex(BridgeRPCError, "cwd must be a real directory"):
+                self._run_rejected(metadata)
+            self.assertFalse(Path(metadata["state_dir"]).exists())
+            metadata["cwd"] = os.path.relpath(
+                (root / "candidate").resolve(), Path(__file__).resolve().parents[1]
+            )
+            with self.assertRaisesRegex(BridgeRPCError, "cwd must be absolute"):
+                self._run_rejected(metadata)
+            self.assertFalse(Path(metadata["state_dir"]).exists())
+
+    @unittest.skipUnless(_NATIVE_BRIDGE_READY, "built native Pi bridge is unavailable")
+    def test_state_and_trace_symlink_aliases_are_rejected_before_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = Path(__file__).resolve().parents[1]
+            metadata = self._metadata(root, "cold")
+            state_alias = root / "state-alias"
+            state_alias.symlink_to(repository, target_is_directory=True)
+            metadata["state_dir"] = str(state_alias)
+            with self.assertRaisesRegex(BridgeRPCError, "state_dir must be outside"):
+                self._run_rejected(metadata)
+            self.assertFalse(Path(metadata["raw_trace_path"]).exists())
+
+            second = root / "second"
+            second.mkdir()
+            metadata = self._metadata(second, "cold")
+            trace_alias = second / "trace-alias"
+            trace_alias.symlink_to(repository / "README.md")
+            metadata["raw_trace_path"] = str(trace_alias)
+            with self.assertRaisesRegex(BridgeRPCError, "raw_trace_path must not be a symlink"):
+                self._run_rejected(metadata)
+            self.assertFalse(Path(metadata["state_dir"]).exists())
+
+    @unittest.skipUnless(_NATIVE_BRIDGE_READY, "built native Pi bridge is unavailable")
+    def test_forged_manifest_session_path_is_rejected_before_open_or_trace_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = self._metadata(root, "continuation")
+            metadata["continuation_ref"] = "pi-session-v1:forged"
+            escaped = (root / "escaped-session.json").resolve()
+            escaped.write_text('{"id":"forged"}\n', encoding="utf-8")
+            manifest = {
+                "continuation_ref": metadata["continuation_ref"],
+                "session_id": "forged",
+                "session_file": str(escaped),
+                "task_id": metadata["task_id"],
+                "registration_sha256": metadata["registration_sha256"],
+                "task_snapshot_sha256": metadata["task_snapshot_sha256"],
+                "candidate_identity": metadata["candidate_identity"],
+                "check_identity": metadata["check_identity"],
+                "environment_identity": metadata["environment_identity"],
+                "environment_snapshot_sha256": metadata["environment_snapshot_sha256"],
+            }
+            manifest_path = Path(metadata["session_dir"]) / "task.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(BridgeRPCError, "within the authorized session_dir"):
+                self._run_rejected(metadata)
+            self.assertFalse(Path(metadata["state_dir"]).exists())
+            self.assertFalse(Path(metadata["raw_trace_path"]).exists())
+            self.assertEqual('{"id":"forged"}\n', escaped.read_text(encoding="utf-8"))
+            linked = Path(metadata["session_dir"]) / "linked-session.json"
+            linked.symlink_to(escaped)
+            manifest["session_file"] = str(linked)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(BridgeRPCError, "must not contain symlink components"):
+                self._run_rejected(metadata)
+            self.assertFalse(Path(metadata["state_dir"]).exists())
+            self.assertFalse(Path(metadata["raw_trace_path"]).exists())
+
+    @unittest.skipUnless(_NATIVE_BRIDGE_READY, "built native Pi bridge is unavailable")
+    def test_python_continuation_rejects_session_symlink_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = self._metadata(root, "continuation")
+            session_dir = Path(metadata["session_dir"])
+            session_file = session_dir / "session.json"
+            session_file.write_text('{"id":"session"}\n', encoding="utf-8")
+            metadata["continuation_ref"] = "pi-session-v1:session"
+            manifest_path = session_dir / "task.json"
+            manifest = {
+                "continuation_ref": metadata["continuation_ref"],
+                "session_id": "session",
+                "session_file": str(session_file),
+                "task_id": metadata["task_id"],
+                "registration_sha256": metadata["registration_sha256"],
+                "task_snapshot_sha256": metadata["task_snapshot_sha256"],
+                "candidate_identity": metadata["candidate_identity"],
+                "check_identity": metadata["check_identity"],
+                "environment_identity": metadata["environment_identity"],
+                "environment_snapshot_sha256": metadata["environment_snapshot_sha256"],
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            bridge = NativeSessionBridge(metadata=metadata, timeout_seconds=5)
+            self.assertEqual(metadata["continuation_ref"], bridge.continuation_reference())
+            outside_manifest = session_dir.parent / "outside.json"
+            outside_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+            bridge.metadata["session_key"] = "../outside"
+            with self.assertRaisesRegex(BridgeError, "session_key must be an explicit safe identifier"):
+                bridge.continuation_reference()
+            bridge.metadata["session_key"] = "task"
+            escaped = root / "escaped-session.json"
+            escaped.write_text('{"id":"session"}\n', encoding="utf-8")
+            session_file.unlink()
+            session_file.symlink_to(escaped)
+            manifest["session_file"] = str(session_file)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertIsNone(bridge.continuation_reference())
+
+    @unittest.skipUnless(_NATIVE_BRIDGE_READY, "built native Pi bridge is unavailable")
+    def test_cold_session_file_is_created_and_reopened_for_continuation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = self._metadata(Path(directory), "cold")
+            calls: list[str] = []
+
+            def deny_provider(method: str, _payload: dict[str, object]) -> dict[str, object]:
+                calls.append(method)
+                raise PermissionError("fixture rejects admission before provider transport")
+
+            def run(phase: dict[str, object]) -> NativeSessionBridge:
+                bridge = NativeSessionBridge(metadata=phase, timeout_seconds=15)
+                result = bridge.run(
+                    {"type": "run", "request_id": phase["request_id"],
+                     "run_id": phase["request_id"], "messages": [{"content": "probe"}],
+                     "timeout_ms": 12000},
+                    rpc_handler=deny_provider, event_handler=lambda _event: None,
+                    cancel_event=threading.Event(),
+                )
+                self.assertEqual("failed", result["status"])
+                return bridge
+
+            cold = run(metadata)
+            manifest = json.loads((Path(metadata["session_dir"]) / "task.json").read_text(encoding="utf-8"))
+            self.assertTrue(Path(manifest["session_file"]).is_file())
+            reference = cold.continuation_reference()
+            self.assertEqual(manifest["continuation_ref"], reference)
+            continuation = {**metadata, "phase": "continuation",
+                            "continuation_ref": reference, "request_id": "native-continuation",
+                            "raw_trace_path": str(Path(metadata["state_dir"]).parent / "continued-trace.jsonl")}
+            reopened = run(continuation)
+            self.assertEqual(reference, reopened.continuation_reference())
+            self.assertEqual(["prepare_request", "prepare_request"], calls)
 
 
 class CodingEvidenceTests(unittest.TestCase):

@@ -111,7 +111,7 @@ def _source_root(root: Path, import_root: str) -> Path:
 def _import_selected(root: Path, import_root: str, package: str) -> tuple[Any, list[dict[str, Any]]]:
     selected = _source_root(root, import_root)
     if package == "pytest":
-        build_directory = Path(tempfile.mkdtemp(prefix="goal-native-pytest-build-"))
+        build_directory = Path(tempfile.mkdtemp(prefix="goal-native-pytest-build-")).resolve()
         build_root = build_directory / "source"
         target = build_directory / "site"
         build_root.mkdir()
@@ -191,7 +191,7 @@ def _pytest_run(pytest: Any, lines: list[str], *, warnings: bool = False, observ
         return code, text
 
 
-def _pytest_approx(pytest: Any, phase: str) -> list[dict[str, Any]]:
+def _pytest_approx(pytest: Any, phase: str, checks: list[dict[str, Any]]) -> None:
     equal_code, equal_output = _pytest_run(pytest, [
         "import pytest",
         "def test_unordered_equal():",
@@ -199,11 +199,11 @@ def _pytest_approx(pytest: Any, phase: str) -> list[dict[str, Any]]:
         "    actual = {'c': 3, 'a': 1}",
         "    assert actual == pytest.approx(expected)",
     ])
-    checks = [_check(
+    checks.append(_check(
         "unordered_mapping_equal_passes",
         equal_code == 0,
         "exit=%s output=%s" % (equal_code, equal_output),
-    )]
+    ))
     mismatch_code, mismatch_output = _pytest_run(pytest, [
         "import pytest",
         "def test_unordered_mismatch():",
@@ -230,10 +230,9 @@ def _pytest_approx(pytest: Any, phase: str) -> list[dict[str, Any]]:
             _check("parametrized_unordered_mismatch_fails", parameterized_code != 0, "exit=%s" % parameterized_code),
             _check("parametrized_diagnostics_repeat_correctly", count == 2, parameterized_output),
         ])
-    return checks
 
 
-def _pytest_fixture(pytest: Any, phase: str) -> list[dict[str, Any]]:
+def _pytest_fixture(pytest: Any, phase: str, checks: list[dict[str, Any]]) -> None:
     observed: dict[str, Any] = {}
     error_code, error_output = _pytest_run(pytest, [
         "import pytest",
@@ -243,10 +242,10 @@ def _pytest_fixture(pytest: Any, phase: str) -> list[dict[str, Any]]:
         "def test_sync_requests_async(async_fixture):",
         "    assert async_fixture == 42",
     ], warnings=True, observations=observed)
-    checks = [
+    checks.extend([
         _check("sync_test_async_fixture_is_error", error_code != 0, "exit=%s output=%s" % (error_code, error_output)),
         _check("sync_test_async_fixture_reports_boundary", ("setup", "FixtureLookupError") in observed.get("exceptions", []), observed),
-    ]
+    ])
     control: dict[str, Any] = {}
     control_code, control_output = _pytest_run(pytest, [
         "import pytest",
@@ -274,10 +273,9 @@ def _pytest_fixture(pytest: Any, phase: str) -> list[dict[str, Any]]:
             _check("autouse_async_fixture_test_runs", warning_code == 0, warning_output),
             _check("autouse_async_fixture_warns", "PytestRemovedIn9Warning" in autouse.get("warnings", []), autouse),
         ])
-    return checks
 
 
-def _flask_2984(flask: Any, phase: str) -> list[dict[str, Any]]:
+def _flask_2984(flask: Any, phase: str, checks: list[dict[str, Any]]) -> None:
     from werkzeug.exceptions import HTTPException
     from flask import abort
 
@@ -300,10 +298,10 @@ def _flask_2984(flask: Any, phase: str) -> list[dict[str, Any]]:
     with app.test_client() as client:
         redirect_response = client.get("/slash")
         redirect_ok = redirect_response.status_code in (301, 308) and str(redirect_response.headers.get("Location", "")).endswith("/slash/")
-        checks = [
+        checks.extend([
             _check("routing_redirect_response_is_preserved", redirect_ok, "status=%s location=%s" % (redirect_response.status_code, redirect_response.headers.get("Location"))),
             _check("routing_redirect_skips_http_exception_handler", not calls, "handler_calls=%s" % calls),
-        ]
+        ])
         error_response = client.get("/does-not-exist")
         checks.append(_check("genuine_http_error_uses_handler", error_response.status_code == 404 and error_response.data == b"handled" and calls and calls[-1] == "NotFound", "status=%s data=%r calls=%s" % (error_response.status_code, error_response.data, calls)))
         if phase == "changed":
@@ -311,10 +309,9 @@ def _flask_2984(flask: Any, phase: str) -> list[dict[str, Any]]:
             checks.append(_check("explicit_http_error_uses_handler", bad_response.status_code == 400 and bad_response.data == b"handled" and calls[-1] == "BadRequest", calls))
             target = client.get("/slash/")
             checks.append(_check("redirect_target_remains_callable", target.status_code == 200 and target.data == b"slash", target.status_code))
-    return checks
 
 
-def _flask_5774(flask: Any, phase: str) -> list[dict[str, Any]]:
+def _flask_5774(flask: Any, phase: str, checks: list[dict[str, Any]]) -> None:
     from flask import Response, g, request, session, stream_with_context
 
     app = flask.Flask("goal-native-flask-5774")
@@ -347,7 +344,6 @@ def _flask_5774(flask: Any, phase: str) -> list[dict[str, Any]]:
 
         return Response(generate())
 
-    checks: list[dict[str, Any]] = []
     observed = {
         "async_stream_response_remains_streamed": False,
         "async_stream_iteration_keeps_context": False,
@@ -361,10 +357,10 @@ def _flask_5774(flask: Any, phase: str) -> list[dict[str, Any]]:
             observed["async_stream_response_remains_streamed"] = async_response.status_code == 200 and bool(async_response.is_streamed)
             lazy = "finished" not in progress
             async_body = b"".join(async_response.response)
-            async_response.close()
             observed["async_stream_iteration_keeps_context"] = async_body == expected_body
             observed["async_stream_generator_is_not_buffered"] = lazy and progress == ["started", "finished"]
             detail = "body=%r progress=%r" % (async_body, progress)
+            async_response.close()
         observed["async_stream_context_cleanup"] = True
     except BaseException as error:
         detail += " cleanup_or_iteration_error=%r" % error
@@ -380,10 +376,9 @@ def _flask_5774(flask: Any, phase: str) -> list[dict[str, Any]]:
     except BaseException as error:
         sync_ok, sync_detail = False, repr(error)
     checks.append(_check("sync_stream_context_control", sync_ok, sync_detail))
-    return checks
 
 
-def _flask_5786(flask: Any, phase: str) -> list[dict[str, Any]]:
+def _flask_5786(flask: Any, phase: str, checks: list[dict[str, Any]]) -> None:
     from flask import redirect, session
 
     app = flask.Flask("goal-native-flask-5786")
@@ -401,16 +396,13 @@ def _flask_5786(flask: Any, phase: str) -> list[dict[str, Any]]:
 
     with app.test_client() as client:
         response = client.get("/redirect", follow_redirects=True)
+        checks.append(_check("follow_redirects_returns_target", response.status_code == 200 and response.data == b"target", "status=%s data=%r" % (response.status_code, response.data)))
         first_state = dict(session)
-        checks = [
-            _check("follow_redirects_returns_target", response.status_code == 200 and response.data == b"target", "status=%s data=%r" % (response.status_code, response.data)),
-            _check("follow_redirects_preserves_final_session", first_state.get("redirect") == "yes" and first_state.get("target") == "yes", "session=%s" % first_state),
-        ]
+        checks.append(_check("follow_redirects_preserves_final_session", first_state.get("redirect") == "yes" and first_state.get("target") == "yes", "session=%s" % first_state))
         if phase == "changed":
             second_response = client.get("/target")
             second_state = dict(session)
             checks.append(_check("second_request_preserves_nested_context_order", second_response.status_code == 200 and second_state.get("target") == "yes" and second_state.get("redirect") == "yes", "status=%s session=%s" % (second_response.status_code, second_state)))
-    return checks
 
 
 def _side(task_id: str, root: Path, phase: str) -> dict[str, Any]:
@@ -422,20 +414,80 @@ def _side(task_id: str, root: Path, phase: str) -> dict[str, Any]:
         "flask-5786-redirect-session": ("flask", "src"),
     }
     package, import_root = config[task_id]
+    names = {
+        "pytest-12444-approx-formatting": {
+            "cold": ["imports_selected_source", "unordered_mapping_equal_passes",
+                     "unordered_mapping_mismatch_fails", "unordered_mapping_reports_one_mismatch",
+                     "unordered_mapping_does_not_report_equal_key"],
+            "changed": ["imports_selected_source", "unordered_mapping_equal_passes",
+                        "unordered_mapping_mismatch_fails", "unordered_mapping_reports_one_mismatch",
+                        "unordered_mapping_does_not_report_equal_key",
+                        "parametrized_unordered_mismatch_fails", "parametrized_diagnostics_repeat_correctly"],
+        },
+        "pytest-10839-async-fixture-warning": {
+            "cold": ["imports_selected_source", "sync_test_async_fixture_is_error",
+                     "sync_test_async_fixture_reports_boundary", "unrelated_sync_fixture_remains_valid"],
+            "changed": ["imports_selected_source", "sync_test_async_fixture_is_error",
+                        "sync_test_async_fixture_reports_boundary", "unrelated_sync_fixture_remains_valid",
+                        "autouse_async_fixture_test_runs", "autouse_async_fixture_warns"],
+        },
+        "flask-2984-routing-exception-handler": {
+            "cold": ["imports_selected_source", "routing_redirect_response_is_preserved",
+                     "routing_redirect_skips_http_exception_handler", "genuine_http_error_uses_handler"],
+            "changed": ["imports_selected_source", "routing_redirect_response_is_preserved",
+                         "routing_redirect_skips_http_exception_handler", "genuine_http_error_uses_handler",
+                         "explicit_http_error_uses_handler", "redirect_target_remains_callable"],
+        },
+        "flask-5774-async-stream-context": {
+            "cold": ["imports_selected_source", "async_stream_response_remains_streamed",
+                     "async_stream_iteration_keeps_context", "async_stream_generator_is_not_buffered",
+                     "async_stream_context_cleanup", "sync_stream_context_control"],
+            "changed": ["imports_selected_source", "async_stream_response_remains_streamed",
+                        "async_stream_iteration_keeps_context", "async_stream_generator_is_not_buffered",
+                        "async_stream_context_cleanup", "sync_stream_context_control"],
+        },
+        "flask-5786-redirect-session": {
+            "cold": ["imports_selected_source", "follow_redirects_returns_target",
+                     "follow_redirects_preserves_final_session"],
+            "changed": ["imports_selected_source", "follow_redirects_returns_target",
+                        "follow_redirects_preserves_final_session",
+                        "second_request_preserves_nested_context_order"],
+        },
+    }
+
+    observed: dict[str, dict[str, Any]] = {}
+
+    def retain(items: list[dict[str, Any]]) -> None:
+        for item in items:
+            observed[item["name"]] = item
+
+    checks: list[dict[str, Any]] = []
     try:
-        module, checks = _import_selected(root, import_root, package)
+        module, imports = _import_selected(root, import_root, package)
+        retain(imports)
         if task_id == "pytest-12444-approx-formatting":
-            checks.extend(_pytest_approx(module, phase))
+            _pytest_approx(module, phase, checks)
         elif task_id == "pytest-10839-async-fixture-warning":
-            checks.extend(_pytest_fixture(module, phase))
+            _pytest_fixture(module, phase, checks)
         elif task_id == "flask-2984-routing-exception-handler":
-            checks.extend(_flask_2984(module, phase))
+            _flask_2984(module, phase, checks)
         elif task_id == "flask-5774-async-stream-context":
-            checks.extend(_flask_5774(module, phase))
+            _flask_5774(module, phase, checks)
         else:
-            checks.extend(_flask_5786(module, phase))
+            _flask_5786(module, phase, checks)
+        retain(checks)
     except BaseException as error:
-        checks = [_check("imports_and_executes_selected_source", False, repr(error))]
+        retain(checks)
+        detail = _short("%s: %s" % (type(error).__name__, error))
+        # A completed body does not prove successful context teardown. When
+        # nothing remains unobserved, conservatively invalidate the final check.
+        if all(name in observed for name in names[task_id][phase]):
+            final_name = names[task_id][phase][-1]
+            observed[final_name] = _check(final_name, False, detail)
+        for name in names[task_id][phase]:
+            if name not in observed:
+                observed[name] = _check(name, False, detail)
+    checks = [observed[name] for name in names[task_id][phase]]
     return {"all_passed": all(item["passed"] for item in checks), "checks": checks}
 
 

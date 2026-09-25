@@ -90,6 +90,8 @@ class StoreBoundaryTests(unittest.TestCase):
         self.assertEqual(usage["normalized"]["reasoning_tokens"], None)
         finished = self.store.finish(invocation["id"], "finished", "complete")
         self.assertEqual(finished["result"], "complete")
+        with self.assertRaisesRegex(PermissionError, "invocation is not running"):
+            self.store.assert_invocation_current(invocation["id"])
         acceptance = self.store.accept(goal["id"], artifact["id"], evidence["id"], 1)
         self.assertEqual(acceptance["artifact_id"], artifact["id"])
 

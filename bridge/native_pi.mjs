@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile, appendFile, stat } from "node:fs/promises";
+import { mkdir, readFile, writeFile, appendFile, lstat, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -67,9 +67,130 @@ function requiredHash(value, name) {
 }
 
 function absolutePath(value, name) {
-  const resolved = path.resolve(requiredString(value, name));
-  if (!path.isAbsolute(resolved)) throw new Error(`${name} must be absolute`);
+  const supplied = requiredString(value, name);
+  if (!path.isAbsolute(supplied)) throw new Error(`${name} must be absolute`);
+  return path.resolve(supplied);
+}
+
+async function canonicalPath(value, name, { rejectLeafSymlink = false } = {}) {
+  const resolved = absolutePath(value, name);
+  let leaf;
+  try {
+    leaf = await lstat(resolved);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  if (leaf?.isSymbolicLink()) {
+    if (rejectLeafSymlink) throw new Error(`${name} must not be a symlink`);
+    try {
+      await realpath(resolved);
+    } catch (error) {
+      throw new Error(`${name} must not be a dangling symlink`);
+    }
+  }
+  let current = resolved;
+  const missing = [];
+  while (true) {
+    try {
+      const details = await lstat(current);
+      if (missing.length) {
+        let followed;
+        try {
+          followed = await stat(current);
+        } catch (error) {
+          if (details.isSymbolicLink() && error?.code === "ENOENT") {
+            throw new Error(`${name} contains a dangling symlink component`);
+          }
+          throw error;
+        }
+        if (!followed.isDirectory()) {
+          throw new Error(`${name} contains a non-directory path component`);
+        }
+      }
+      const canonical = await realpath(current);
+      return path.join(canonical, ...missing.reverse());
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      const parent = path.dirname(current);
+      if (parent === current) throw new Error(`${name} has no existing parent`);
+      missing.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+async function directoryPath(value, name) {
+  const canonical = await canonicalPath(value, name);
+  try {
+    const details = await lstat(canonical);
+    if (!details.isDirectory()) throw new Error(`${name} must be a directory`);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return canonical;
+}
+
+async function regularFilePath(value, name) {
+  const canonical = await canonicalPath(value, name, { rejectLeafSymlink: true });
+  let details;
+  try {
+    details = await lstat(canonical);
+  } catch (error) {
+    throw new Error(`${name} must identify a regular explicit file`);
+  }
+  if (!details.isFile()) throw new Error(`${name} must identify a regular explicit file`);
+  return canonical;
+}
+
+async function outputFilePath(value, name) {
+  const canonical = await canonicalPath(value, name, { rejectLeafSymlink: true });
+  try {
+    const details = await lstat(canonical);
+    if (!details.isFile()) throw new Error(`${name} must identify a regular file path`);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return canonical;
+}
+
+async function rejectSymlinkComponents(value, name) {
+  const resolved = absolutePath(value, name);
+  const parsed = path.parse(resolved);
+  let current = parsed.root;
+  const components = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  for (const component of components) {
+    current = path.join(current, component);
+    let details;
+    try {
+      details = await lstat(current);
+    } catch (error) {
+      if (error?.code === "ENOENT") throw new Error(`${name} is missing`);
+      throw error;
+    }
+    if (details.isSymbolicLink()) throw new Error(`${name} must not contain symlink components`);
+    if (current !== resolved && !details.isDirectory()) {
+      throw new Error(`${name} contains a non-directory path component`);
+    }
+  }
   return resolved;
+}
+
+async function sessionFilePath(value, sessionDirectory, name) {
+  const raw = requiredString(value, name);
+  if (!path.isAbsolute(raw)) throw new Error(`${name} must be absolute`);
+  const resolved = await rejectSymlinkComponents(raw, name);
+  let details;
+  try {
+    details = await lstat(resolved);
+  } catch (error) {
+    throw new Error(`${name} must identify an existing regular file`);
+  }
+  if (!details.isFile()) throw new Error(`${name} must identify an existing regular file`);
+  const canonical = await realpath(resolved);
+  if (!outside(canonical, sessionDirectory)) {
+    throw new Error(`${name} must be within the authorized session_dir`);
+  }
+  return canonical;
 }
 
 function outside(candidate, parent) {
@@ -84,9 +205,9 @@ function requireOutside(candidate, parent, name) {
 
 async function requireDirectory(value, name) {
   const resolved = absolutePath(value, name);
-  const details = await stat(resolved);
-  if (!details.isDirectory()) throw new Error(`${name} must be a directory`);
-  return resolved;
+  const details = await lstat(resolved);
+  if (!details.isDirectory()) throw new Error(`${name} must be a real directory`);
+  return await realpath(resolved);
 }
 
 function resourceLoader() {
@@ -127,12 +248,22 @@ function sessionKey(request) {
 async function loadOrCreateSession(request, cwd, sessionDirectory) {
   const key = sessionKey(request);
   const manifestPath = path.join(sessionDirectory, `${key}.json`);
-  await mkdir(sessionDirectory, { recursive: true });
+  let manifestDetails = null;
+  try {
+    manifestDetails = await lstat(manifestPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  if (manifestDetails?.isSymbolicLink()) throw new Error("persisted native session manifest must not be a symlink");
   if (request.phase === "cold") {
-    if (existsSync(manifestPath)) throw new Error(`persisted native session already exists for ${key}`);
+    if (manifestDetails) throw new Error(`persisted native session already exists for ${key}`);
+    await mkdir(sessionDirectory, { recursive: true });
     const manager = SessionManager.create(cwd, sessionDirectory);
-    const sessionFile = manager.getSessionFile();
-    if (!sessionFile) throw new Error("SessionManager did not create a persisted session file");
+    // A fresh SessionManager has chosen its path but has not written a file yet.
+    const sessionFile = await outputFilePath(manager.getSessionFile(), "native session file");
+    if (!outside(sessionFile, sessionDirectory)) {
+      throw new Error("native session file must be within the authorized session_dir");
+    }
     const continuationRef = `pi-session-v1:${manager.getSessionId()}`;
     await writeFile(manifestPath, `${jsonLine({
       key,
@@ -147,9 +278,10 @@ async function loadOrCreateSession(request, cwd, sessionDirectory) {
       environment_identity: request.environment_identity ?? null,
       environment_snapshot_sha256: request.environment_snapshot_sha256 ?? null,
     })}\n`, { encoding: "utf8", flag: "wx" });
-    return { manager, continuationRef, resumedFrom: null, manifestPath };
+    return { manager, continuationRef, resumedFrom: null, manifestPath, sessionFile };
   }
   if (request.phase !== "continuation") throw new Error("phase must be cold or continuation");
+  if (!manifestDetails?.isFile()) throw new Error("persisted native session manifest must be a regular file");
   const suppliedRef = requiredString(request.continuation_ref, "continuation_ref");
   let manifest;
   try {
@@ -167,9 +299,10 @@ async function loadOrCreateSession(request, cwd, sessionDirectory) {
       || manifest.environment_snapshot_sha256 !== (request.environment_snapshot_sha256 ?? null)) {
     throw new Error("continuation_ref or persisted native session identity does not match this request");
   }
-  const manager = SessionManager.open(manifest.session_file, sessionDirectory, cwd);
+  const sessionFile = await sessionFilePath(manifest.session_file, sessionDirectory, "manifest.session_file");
+  const manager = SessionManager.open(sessionFile, sessionDirectory, cwd);
   if (manager.getSessionId() !== manifest.session_id) throw new Error("persisted native session identity changed");
-  return { manager, continuationRef: suppliedRef, resumedFrom: suppliedRef, manifestPath };
+  return { manager, continuationRef: suppliedRef, resumedFrom: suppliedRef, manifestPath, sessionFile };
 }
 
 function toolNamesFor(request, tools) {
@@ -351,13 +484,20 @@ async function runRequest(request, rpc, emit, control = {}) {
   const modelId = requiredString(request.model, "model");
   const toolProfile = requiredString(request.tool_profile, "tool_profile");
   const safetyProfile = requiredString(request.safety_profile, "safety_profile");
-  const cwd = requireOutside(await requireDirectory(request.cwd, "cwd"), REPOSITORY_ROOT, "cwd");
-  const stateDirectory = requireOutside(absolutePath(request.state_dir, "state_dir"), REPOSITORY_ROOT, "state_dir");
-  const sessionDirectory = requireOutside(requireOutside(absolutePath(request.session_dir, "session_dir"), cwd, "session_dir"), REPOSITORY_ROOT, "session_dir");
-  const authFile = requireOutside(absolutePath(request.auth_file, "auth_file"), REPOSITORY_ROOT, "auth_file");
-  const rawTracePath = requireOutside(requireOutside(absolutePath(request.raw_trace_path, "raw_trace_path"), cwd, "raw_trace_path"), REPOSITORY_ROOT, "raw_trace_path");
-  const authDetails = await stat(authFile);
-  if (!authDetails.isFile()) throw new Error("auth_file must identify a regular explicit credential file");
+  const repositoryRoot = await realpath(REPOSITORY_ROOT);
+  const cwd = requireOutside(await requireDirectory(request.cwd, "cwd"), repositoryRoot, "cwd");
+  const stateDirectory = requireOutside(await directoryPath(request.state_dir, "state_dir"), repositoryRoot, "state_dir");
+  const sessionDirectory = requireOutside(
+    requireOutside(await directoryPath(request.session_dir, "session_dir"), cwd, "session_dir"),
+    repositoryRoot,
+    "session_dir",
+  );
+  const authFile = requireOutside(await regularFilePath(request.auth_file, "auth_file"), repositoryRoot, "auth_file");
+  const rawTracePath = requireOutside(
+    requireOutside(await outputFilePath(request.raw_trace_path, "raw_trace_path"), cwd, "raw_trace_path"),
+    repositoryRoot,
+    "raw_trace_path",
+  );
   const maxRounds = Number.isInteger(request.max_rounds) ? request.max_rounds : 12;
   const maxSeconds = Number.isFinite(request.max_time_seconds) ? request.max_time_seconds : 300;
   if (maxRounds < 1 || maxRounds > MAX_ROUNDS) throw new Error(`max_rounds must be between 1 and ${MAX_ROUNDS}`);
@@ -374,13 +514,6 @@ async function runRequest(request, rpc, emit, control = {}) {
   const checkIdentity = requiredString(request.check_identity, "check_identity");
   const environmentIdentity = requiredString(request.environment_identity, "environment_identity");
   const environmentSnapshot = requiredHash(request.environment_snapshot_sha256, "environment_snapshot_sha256");
-  await mkdir(stateDirectory, { recursive: true });
-  await mkdir(path.dirname(rawTracePath), { recursive: true });
-  if (existsSync(rawTracePath)) throw new Error("raw_trace_path already exists; native traces are immutable");
-  await writeFile(rawTracePath, "", { encoding: "utf8", flag: "wx" });
-  const traceHandle = { hash: createHash("sha256"), events: [], bytes: 0 };
-  let traceError = null;
-  let eventQueue = Promise.resolve();
   const recordEvent = async (event, forward) => {
     if (traceHandle.events.length >= maxTraceEvents) throw new Error("native trace event bound exceeded");
     const safe = sanitizeWire(JSON.parse(jsonLine(event)));
@@ -434,6 +567,13 @@ async function runRequest(request, rpc, emit, control = {}) {
   const model = modelRuntime.getModel(provider, modelId);
   if (!model) throw new Error(`pinned pi catalog does not contain ${provider}/${modelId}`);
   const sessionState = await loadOrCreateSession(request, cwd, sessionDirectory);
+  await mkdir(stateDirectory, { recursive: true });
+  await mkdir(path.dirname(rawTracePath), { recursive: true });
+  if (existsSync(rawTracePath)) throw new Error("raw_trace_path already exists; native traces are immutable");
+  await writeFile(rawTracePath, "", { encoding: "utf8", flag: "wx" });
+  const traceHandle = { hash: createHash("sha256"), events: [], bytes: 0 };
+  let traceError = null;
+  let eventQueue = Promise.resolve();
   const cancellation = { requested: false, reason: null };
   let rounds = 0;
   const governed = governedRuntime(modelRuntime, rpc, metadata, enqueueEvent, () => eventQueue, () => {
@@ -487,7 +627,7 @@ async function runRequest(request, rpc, emit, control = {}) {
     await eventQueue;
     session.dispose();
   }
-  const transcriptSha256 = sha256(await readFile(sessionState.manager.getSessionFile()));
+  const transcriptSha256 = sha256(await readFile(sessionState.sessionFile));
   if (traceError) throw new Error(`native trace capture failed: ${safeError(traceError)}`);
   const usage = collectUsage(traceHandle.events, metadata.providerPayloads);
   const status = resultStatus(traceHandle.events, cancellation, metadata.admissionRejection);
@@ -505,7 +645,7 @@ async function runRequest(request, rpc, emit, control = {}) {
       native_session: true,
       transcript_imported: false,
       session_id: sessionState.manager.getSessionId(),
-      session_file: sessionState.manager.getSessionFile(),
+      session_file: sessionState.sessionFile,
       transcript_sha256: transcriptSha256,
     },
     configuration: {
